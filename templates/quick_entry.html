@@ -1,0 +1,323 @@
+{% extends "base.html" %}
+{% block title %}Quick Entry — BettingEdge{% endblock %}
+
+{% block content %}
+<div class="container-fluid px-4 py-3">
+
+  <div class="d-flex align-items-center justify-content-between mb-3">
+    <div>
+      <h4 class="mb-0"><i class="bi bi-lightning-charge text-warning"></i> Quick Odds Entry</h4>
+      <small class="text-muted">Enter lines from Don Best or any book — hit Analyze to see what to bet.</small>
+    </div>
+    <div class="text-end">
+      <button id="analyzeBtn" class="btn btn-success btn-lg px-4">
+        <i class="bi bi-calculator"></i> Analyze
+      </button>
+      <div id="spinner" class="d-none mt-1">
+        <div class="spinner-border spinner-border-sm text-success" role="status"></div>
+        <small class="text-muted ms-1">Running sims…</small>
+      </div>
+    </div>
+  </div>
+
+  {% if not games %}
+  <div class="alert alert-secondary">
+    No scheduled games found for today ({{ today }}).
+    <a href="/game/new" class="alert-link">Add a game manually</a>.
+  </div>
+  {% else %}
+
+  <!-- Tips bar -->
+  <div class="alert alert-dark border border-secondary py-2 mb-3 small">
+    <i class="bi bi-info-circle text-info"></i>
+    Enter American odds exactly as you see them: <code>-170</code>, <code>+145</code>.
+    Leave blank to skip that market. Tab through fields quickly — game, away ML, home ML, total, over, under, F5 away, F5 home, F5 total.
+  </div>
+
+  <div class="table-responsive">
+    <table class="table table-dark table-sm table-bordered align-middle mb-0" id="oddsTable">
+      <thead class="table-secondary text-center" style="font-size:0.78rem;">
+        <tr>
+          <th style="min-width:140px;" class="text-start">Game</th>
+          <th colspan="2" class="text-center border-start border-secondary">── Full Game ML ──</th>
+          <th colspan="3" class="text-center border-start border-secondary">── Total ──</th>
+          <th colspan="3" class="text-center border-start border-secondary">── F5 ──</th>
+        </tr>
+        <tr>
+          <th class="text-start"></th>
+          <th>Away ML</th>
+          <th>Home ML</th>
+          <th class="border-start border-secondary">Line</th>
+          <th>Over</th>
+          <th>Under</th>
+          <th class="border-start border-secondary">F5 Away</th>
+          <th>F5 Home</th>
+          <th>F5 Total</th>
+        </tr>
+      </thead>
+      <tbody>
+        {% for game in games %}
+        {% set o = odds_by_game.get(game.id, {}) %}
+        <tr data-game-id="{{ game.id }}">
+          <td class="text-nowrap">
+            <span class="fw-bold">{{ game.away_team.abbreviation }}</span>
+            <span class="text-muted"> @ </span>
+            <span class="fw-bold">{{ game.home_team.abbreviation }}</span>
+            {% if game.game_time_utc %}
+            <br><small class="text-muted">{{ (game.game_time_utc - timedelta(hours=7)).strftime('%-I:%M %p') }} PDT</small>
+            {% endif %}
+          </td>
+
+          <!-- Away ML -->
+          <td>
+            <input type="number" class="form-control form-control-sm odds-field text-center"
+              name="away_ml" placeholder="+150" tabindex="1"
+              value="{{ o.get('h2h').away_price if o.get('h2h') and o.get('h2h').away_price else '' }}">
+          </td>
+          <!-- Home ML -->
+          <td>
+            <input type="number" class="form-control form-control-sm odds-field text-center"
+              name="home_ml" placeholder="-170" tabindex="1"
+              value="{{ o.get('h2h').home_price if o.get('h2h') and o.get('h2h').home_price else '' }}">
+          </td>
+
+          <!-- Total Line -->
+          <td class="border-start border-secondary">
+            <input type="number" class="form-control form-control-sm odds-field text-center"
+              name="total_line" placeholder="8.5" step="0.5" tabindex="1"
+              value="{{ o.get('totals').total_line if o.get('totals') and o.get('totals').total_line else '' }}">
+          </td>
+          <!-- Over -->
+          <td>
+            <input type="number" class="form-control form-control-sm odds-field text-center"
+              name="over_odds" placeholder="-110" tabindex="1"
+              value="{{ o.get('totals').over_price if o.get('totals') and o.get('totals').over_price else '' }}">
+          </td>
+          <!-- Under -->
+          <td>
+            <input type="number" class="form-control form-control-sm odds-field text-center"
+              name="under_odds" placeholder="-110" tabindex="1"
+              value="{{ o.get('totals').under_price if o.get('totals') and o.get('totals').under_price else '' }}">
+          </td>
+
+          <!-- F5 Away ML -->
+          <td class="border-start border-secondary">
+            <input type="number" class="form-control form-control-sm odds-field text-center"
+              name="f5_away_ml" placeholder="+160" tabindex="1"
+              value="{{ o.get('f5_moneyline').away_price if o.get('f5_moneyline') and o.get('f5_moneyline').away_price else '' }}">
+          </td>
+          <!-- F5 Home ML -->
+          <td>
+            <input type="number" class="form-control form-control-sm odds-field text-center"
+              name="f5_home_ml" placeholder="-180" tabindex="1"
+              value="{{ o.get('f5_moneyline').home_price if o.get('f5_moneyline') and o.get('f5_moneyline').home_price else '' }}">
+          </td>
+          <!-- F5 Total -->
+          <td>
+            <input type="number" class="form-control form-control-sm odds-field text-center"
+              name="f5_total" placeholder="4.5" step="0.5" tabindex="1"
+              value="{{ o.get('f5_totals').total_line if o.get('f5_totals') and o.get('f5_totals').total_line else '' }}">
+          </td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+
+  <!-- F5 over/under prices — collapsible extra row to keep the main table clean -->
+  <div class="mt-2">
+    <button class="btn btn-sm btn-outline-secondary" type="button"
+            data-bs-toggle="collapse" data-bs-target="#f5PricesSection">
+      <i class="bi bi-chevron-down"></i> F5 Over/Under Prices (optional)
+    </button>
+    <div class="collapse" id="f5PricesSection">
+      <div class="table-responsive mt-2">
+        <table class="table table-dark table-sm table-bordered align-middle mb-0">
+          <thead class="table-secondary" style="font-size:0.78rem;">
+            <tr>
+              <th style="min-width:140px;">Game</th>
+              <th>F5 Over Price</th>
+              <th>F5 Under Price</th>
+            </tr>
+          </thead>
+          <tbody>
+            {% for game in games %}
+            {% set o = odds_by_game.get(game.id, {}) %}
+            <tr data-game-id-f5="{{ game.id }}">
+              <td class="text-nowrap">
+                <small>{{ game.away_team.abbreviation }} @ {{ game.home_team.abbreviation }}</small>
+              </td>
+              <td>
+                <input type="number" class="form-control form-control-sm odds-field text-center"
+                  name="f5_over" placeholder="-115"
+                  value="{{ o.get('f5_totals').over_price if o.get('f5_totals') and o.get('f5_totals').over_price else '' }}">
+              </td>
+              <td>
+                <input type="number" class="form-control form-control-sm odds-field text-center"
+                  name="f5_under" placeholder="-105"
+                  value="{{ o.get('f5_totals').under_price if o.get('f5_totals') and o.get('f5_totals').under_price else '' }}">
+              </td>
+            </tr>
+            {% endfor %}
+          </tbody>
+        </table>
+      </div>
+    </div>
+  </div>
+
+  {% endif %}
+
+  <!-- ── Results section ─────────────────────────────────────────────── -->
+  <div id="resultsSection" class="mt-4" style="display:none;">
+    <hr class="border-secondary">
+    <h5 class="mb-3">
+      <i class="bi bi-check2-circle text-success"></i> Analysis Results
+      <small class="text-muted fs-6 ms-2" id="resultsSubtitle"></small>
+    </h5>
+
+    <!-- No bets found message -->
+    <div id="noBetsMsg" class="alert alert-secondary d-none">
+      <i class="bi bi-dash-circle"></i>
+      No profitable bets found with current lines. Either the edge is below your minimum
+      or the model's confidence doesn't meet the filter thresholds.
+    </div>
+
+    <!-- Results table -->
+    <div id="resultsTableWrap" class="table-responsive d-none">
+      <table class="table table-dark table-hover align-middle" style="font-size:0.9rem;">
+        <thead class="table-secondary">
+          <tr>
+            <th>Game</th>
+            <th>Bet</th>
+            <th>Side / Team</th>
+            <th class="text-center">Odds</th>
+            <th class="text-center">Our %</th>
+            <th class="text-center">Mkt %</th>
+            <th class="text-center">Edge</th>
+            <th class="text-center">EV</th>
+            <th class="text-center">Suggested Bet</th>
+          </tr>
+        </thead>
+        <tbody id="resultsBody"></tbody>
+      </table>
+    </div>
+  </div>
+
+</div><!-- /container -->
+
+<script>
+document.getElementById('analyzeBtn').addEventListener('click', function () {
+  const games = [];
+
+  // Collect from main table
+  document.querySelectorAll('#oddsTable tbody tr[data-game-id]').forEach(row => {
+    const gid = parseInt(row.dataset.gameId);
+    const get = name => {
+      const el = row.querySelector(`input[name="${name}"]`);
+      return el && el.value.trim() !== '' ? parseFloat(el.value) : null;
+    };
+
+    // F5 over/under prices from secondary table
+    const f5Row = document.querySelector(`tr[data-game-id-f5="${gid}"]`);
+    const getF5 = name => {
+      if (!f5Row) return null;
+      const el = f5Row.querySelector(`input[name="${name}"]`);
+      return el && el.value.trim() !== '' ? parseFloat(el.value) : null;
+    };
+
+    games.push({
+      game_id:    gid,
+      away_ml:    get('away_ml'),
+      home_ml:    get('home_ml'),
+      total_line: get('total_line'),
+      over_odds:  get('over_odds'),
+      under_odds: get('under_odds'),
+      f5_away_ml: get('f5_away_ml'),
+      f5_home_ml: get('f5_home_ml'),
+      f5_total:   get('f5_total'),
+      f5_over:    getF5('f5_over'),
+      f5_under:   getF5('f5_under'),
+    });
+  });
+
+  // Check that at least one game has some odds entered
+  const hasData = games.some(g =>
+    g.away_ml || g.home_ml || g.total_line || g.f5_away_ml || g.f5_home_ml || g.f5_total
+  );
+  if (!hasData) {
+    alert('Enter at least one set of odds before analyzing.');
+    return;
+  }
+
+  // Show spinner
+  document.getElementById('analyzeBtn').disabled = true;
+  document.getElementById('spinner').classList.remove('d-none');
+  document.getElementById('resultsSection').style.display = 'none';
+
+  fetch('/quick-entry/analyze', {
+    method: 'POST',
+    headers: {'Content-Type': 'application/json'},
+    body: JSON.stringify({games})
+  })
+  .then(r => r.json())
+  .then(data => {
+    document.getElementById('analyzeBtn').disabled = false;
+    document.getElementById('spinner').classList.add('d-none');
+    document.getElementById('resultsSection').style.display = '';
+
+    const bets = data.bets || [];
+    const bankroll = data.bankroll || 1000;
+
+    document.getElementById('resultsSubtitle').textContent =
+      `${bets.length} bet${bets.length !== 1 ? 's' : ''} found  ·  Bankroll: $${bankroll.toLocaleString()}`;
+
+    if (bets.length === 0) {
+      document.getElementById('noBetsMsg').classList.remove('d-none');
+      document.getElementById('resultsTableWrap').classList.add('d-none');
+      return;
+    }
+
+    document.getElementById('noBetsMsg').classList.add('d-none');
+    document.getElementById('resultsTableWrap').classList.remove('d-none');
+
+    const tbody = document.getElementById('resultsBody');
+    tbody.innerHTML = '';
+
+    bets.forEach(b => {
+      if (b.error) return;  // skip error entries
+      const edge   = b.edge;
+      const edgeCls = edge >= 10 ? 'text-success fw-bold' :
+                      edge >= 7  ? 'text-success' :
+                                   'text-warning';
+      const betTypeBadge = {
+        'Moneyline': '<span class="badge bg-primary">ML</span>',
+        'Total':     '<span class="badge bg-info text-dark">Total</span>',
+        'F5 ML':     '<span class="badge bg-warning text-dark">F5 ML</span>',
+        'F5 Total':  '<span class="badge bg-secondary">F5 Total</span>',
+      }[b.bet_type] || b.bet_type;
+
+      const row = `<tr>
+        <td class="text-nowrap fw-bold">${b.game}</td>
+        <td>${betTypeBadge}</td>
+        <td>${b.side}${b.team !== '—' ? `<br><small class="text-muted">${b.team}</small>` : ''}</td>
+        <td class="text-center font-monospace">${b.odds}</td>
+        <td class="text-center">${b.our_prob}%</td>
+        <td class="text-center text-muted">${b.mkt_prob}%</td>
+        <td class="text-center ${edgeCls}">${edge}%</td>
+        <td class="text-center">${b.ev}%</td>
+        <td class="text-center fw-bold text-success">$${b.bet_size.toLocaleString()}</td>
+      </tr>`;
+      tbody.insertAdjacentHTML('beforeend', row);
+    });
+
+    // Scroll to results
+    document.getElementById('resultsSection').scrollIntoView({behavior: 'smooth'});
+  })
+  .catch(err => {
+    document.getElementById('analyzeBtn').disabled = false;
+    document.getElementById('spinner').classList.add('d-none');
+    alert('Error: ' + err.message);
+  });
+});
+</script>
+{% endblock %}

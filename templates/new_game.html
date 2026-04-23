@@ -1,0 +1,223 @@
+{% extends "base.html" %}
+{% block title %}New Game — Baseball Betting{% endblock %}
+
+{% block content %}
+<div class="d-flex justify-content-between align-items-center mb-4">
+  <h4><i class="bi bi-plus-circle"></i> Enter Game & Lineup</h4>
+  <a href="/" class="btn btn-outline-secondary btn-sm">← Back</a>
+</div>
+
+<form method="POST" action="/game/new" id="gameForm">
+  <div class="row g-4">
+
+    <!-- Game Info -->
+    <div class="col-12">
+      <div class="card bg-black border-secondary">
+        <div class="card-header text-muted text-uppercase small">Game Info</div>
+        <div class="card-body">
+          <div class="row g-3">
+            <div class="col-md-2">
+              <label class="form-label small text-muted">Date</label>
+              <input type="date" name="game_date" class="form-control bg-dark text-light border-secondary"
+                     value="{{ today }}" required>
+            </div>
+            <div class="col-md-3">
+              <label class="form-label small text-muted">Away Team</label>
+              <select name="away_team_id" class="form-select bg-dark text-light border-secondary" required
+                      onchange="filterPitchers('away', this.value)">
+                <option value="">-- Select Team --</option>
+                {% for team in teams %}
+                <option value="{{ team.id }}">{{ team.name }} ({{ team.abbreviation }})</option>
+                {% endfor %}
+              </select>
+            </div>
+            <div class="col-md-3">
+              <label class="form-label small text-muted">Home Team</label>
+              <select name="home_team_id" class="form-select bg-dark text-light border-secondary" required
+                      onchange="filterPitchers('home', this.value)">
+                <option value="">-- Select Team --</option>
+                {% for team in teams %}
+                <option value="{{ team.id }}">{{ team.name }} ({{ team.abbreviation }})</option>
+                {% endfor %}
+              </select>
+            </div>
+            <div class="col-md-2">
+              <label class="form-label small text-muted">Away Starter</label>
+              <select name="away_starter_id" class="form-select bg-dark text-light border-secondary" id="awayStarterSelect">
+                <option value="">-- TBD --</option>
+                {% for p in pitchers %}
+                <option value="{{ p.id }}" data-team="{{ p.team_id }}">{{ p.name }}</option>
+                {% endfor %}
+              </select>
+            </div>
+            <div class="col-md-2">
+              <label class="form-label small text-muted">Home Starter</label>
+              <select name="home_starter_id" class="form-select bg-dark text-light border-secondary" id="homeStarterSelect">
+                <option value="">-- TBD --</option>
+                {% for p in pitchers %}
+                <option value="{{ p.id }}" data-team="{{ p.team_id }}">{{ p.name }}</option>
+                {% endfor %}
+              </select>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- Weather -->
+    <div class="col-12">
+      <div class="card bg-black border-secondary">
+        <div class="card-header text-muted text-uppercase small">
+          Weather <span class="text-secondary">(optional — affects simulation)</span>
+        </div>
+        <div class="card-body">
+          <div class="row g-3">
+            <div class="col-md-2">
+              <label class="form-label small text-muted">Temp (°F)</label>
+              <input type="number" name="temperature_f" class="form-control bg-dark text-light border-secondary"
+                     placeholder="72" min="30" max="110">
+            </div>
+            <div class="col-md-2">
+              <label class="form-label small text-muted">Wind (mph)</label>
+              <input type="number" name="wind_speed_mph" class="form-control bg-dark text-light border-secondary"
+                     placeholder="0" min="0" max="40">
+            </div>
+            <div class="col-md-3">
+              <label class="form-label small text-muted">Wind Direction</label>
+              <select name="wind_direction" class="form-select bg-dark text-light border-secondary">
+                <option value="">-- Select --</option>
+                <option>Out to CF</option>
+                <option>Out to LF</option>
+                <option>Out to RF</option>
+                <option>In from CF</option>
+                <option>In from LF</option>
+                <option>In from RF</option>
+                <option>Calm / Variable</option>
+              </select>
+            </div>
+            <div class="col-md-2">
+              <label class="form-label small text-muted">Humidity (%)</label>
+              <input type="number" name="humidity_pct" class="form-control bg-dark text-light border-secondary"
+                     placeholder="50" min="0" max="100">
+            </div>
+            <div class="col-md-2">
+              <label class="form-label small text-muted">Pressure (inHg)</label>
+              <input type="number" name="pressure_inhg" class="form-control bg-dark text-light border-secondary"
+                     placeholder="29.92" step="0.01">
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- Lineups side by side -->
+    <div class="col-md-6">
+      <div class="card bg-black border-secondary">
+        <div class="card-header text-muted text-uppercase small">Away Lineup</div>
+        <div class="card-body">
+          {% for i in range(1, 10) %}
+          <div class="d-flex align-items-center mb-2 gap-2">
+            <span class="text-muted" style="width:20px;font-size:0.85rem">{{ i }}.</span>
+            <select name="away_batter_{{ i }}" class="form-select bg-dark text-light border-secondary form-select-sm"
+                    id="awayBatter{{ i }}" onchange="onBatterChange('away', {{ i }}, this.value)">
+              <option value="">-- Select Player --</option>
+              {% for p in players if p.position not in ('SP', 'RP', 'P', 'TWP') %}
+              <option value="{{ p.id }}" data-team="{{ p.team_id }}">{{ p.name }} ({{ p.position }})</option>
+              {% endfor %}
+            </select>
+          </div>
+          {% endfor %}
+        </div>
+      </div>
+    </div>
+
+    <div class="col-md-6">
+      <div class="card bg-black border-secondary">
+        <div class="card-header text-muted text-uppercase small">Home Lineup</div>
+        <div class="card-body">
+          {% for i in range(1, 10) %}
+          <div class="d-flex align-items-center mb-2 gap-2">
+            <span class="text-muted" style="width:20px;font-size:0.85rem">{{ i }}.</span>
+            <select name="home_batter_{{ i }}" class="form-select bg-dark text-light border-secondary form-select-sm"
+                    id="homeBatter{{ i }}" onchange="onBatterChange('home', {{ i }}, this.value)">
+              <option value="">-- Select Player --</option>
+              {% for p in players if p.position not in ('SP', 'RP', 'P', 'TWP') %}
+              <option value="{{ p.id }}" data-team="{{ p.team_id }}">{{ p.name }} ({{ p.position }})</option>
+              {% endfor %}
+            </select>
+          </div>
+          {% endfor %}
+        </div>
+      </div>
+    </div>
+
+    <!-- Submit -->
+    <div class="col-12 text-center">
+      <button type="submit" class="btn btn-success btn-lg px-5">
+        <i class="bi bi-save"></i> Save Game & Enter Lineups
+      </button>
+    </div>
+
+  </div>
+</form>
+{% endblock %}
+
+{% block scripts %}
+<script>
+// When a team is selected: filter pitcher dropdown + all 9 batter slots, reset duplicate tracking
+function filterPitchers(side, teamId) {
+  const starterSelect = document.getElementById(side + 'StarterSelect');
+  starterSelect.querySelectorAll('option[data-team]').forEach(opt => {
+    opt.style.display = (opt.dataset.team == teamId || teamId === '') ? '' : 'none';
+  });
+  starterSelect.value = '';
+
+  const prefix = side === 'away' ? 'awayBatter' : 'homeBatter';
+  for (let i = 1; i <= 9; i++) {
+    const sel = document.getElementById(prefix + i);
+    if (!sel) continue;
+    const currentVal = sel.value;
+    let currentStillValid = false;
+    sel.querySelectorAll('option[data-team]').forEach(opt => {
+      const show = (opt.dataset.team == teamId || teamId === '');
+      opt.style.display = show ? '' : 'none';
+      if (opt.value === currentVal && show) currentStillValid = true;
+    });
+    if (!currentStillValid) sel.value = '';
+  }
+
+  // Re-run duplicate suppression after team change clears everything
+  syncDuplicates(side);
+}
+
+// Called whenever a batter slot changes — suppress that player in all other slots
+function onBatterChange(side, changedSlot, newValue) {
+  syncDuplicates(side);
+}
+
+// Walk all 9 slots for a side, disable any option that's already chosen in another slot
+function syncDuplicates(side) {
+  const prefix = side === 'away' ? 'awayBatter' : 'homeBatter';
+
+  // Collect what's currently selected in each slot (skip empty "")
+  const chosen = {};
+  for (let i = 1; i <= 9; i++) {
+    const sel = document.getElementById(prefix + i);
+    if (sel && sel.value) chosen[sel.value] = i;
+  }
+
+  // For each slot, disable options that are chosen in OTHER slots
+  for (let i = 1; i <= 9; i++) {
+    const sel = document.getElementById(prefix + i);
+    if (!sel) continue;
+    const myValue = sel.value;
+
+    sel.querySelectorAll('option[value]').forEach(opt => {
+      if (!opt.value) return; // skip the blank placeholder
+      const takenByOther = chosen[opt.value] !== undefined && chosen[opt.value] !== i;
+      opt.disabled = takenByOther;
+    });
+  }
+}
+</script>
+{% endblock %}

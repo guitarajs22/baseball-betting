@@ -1,0 +1,213 @@
+{% extends "base.html" %}
+{% block title %}Bankroll Tracker{% endblock %}
+
+{% block content %}
+<div class="d-flex justify-content-between align-items-center mb-4">
+  <h4><i class="bi bi-cash-stack"></i> Bankroll Tracker</h4>
+  <a href="{{ url_for('bets_page') }}" class="btn btn-outline-info btn-sm">
+    <i class="bi bi-journal-check"></i> Bet History
+  </a>
+</div>
+
+<!-- Top Stats Row -->
+<div class="row g-3 mb-4">
+
+  <div class="col-6 col-md-3">
+    <div class="card bg-black border-success text-center py-3">
+      <div class="text-muted small mb-1">CURRENT BANKROLL</div>
+      <div class="display-5 fw-bold text-success">${{ "%.2f"|format(current) }}</div>
+      <div class="text-muted small mt-1">
+        Started at ${{ "%.0f"|format(bankroll_start) }}
+        {% set growth = current - bankroll_start %}
+        &nbsp;
+        <span class="{% if growth >= 0 %}text-success{% else %}text-danger{% endif %}">
+          ({{ '+' if growth >= 0 else '' }}${{ "%.2f"|format(growth) }})
+        </span>
+      </div>
+    </div>
+  </div>
+
+  <div class="col-6 col-md-3">
+    <div class="card bg-black h-100 text-center py-3
+      {% if total_pl > 0 %}border-success{% elif total_pl < 0 %}border-danger{% else %}border-secondary{% endif %}">
+      <div class="text-muted small mb-1">BET P&amp;L</div>
+      <div class="fw-bold {% if total_pl > 0 %}text-success{% elif total_pl < 0 %}text-danger{% else %}text-muted{% endif %}"
+           style="font-size:1.6rem;">
+        {{ '+' if total_pl > 0 else '' }}${{ "%.2f"|format(total_pl) }}
+      </div>
+      <div class="text-muted" style="font-size:0.72rem;">${{ "%.0f"|format(total_wagered) }} wagered</div>
+    </div>
+  </div>
+
+  <div class="col-6 col-md-3">
+    <div class="card bg-black border-secondary h-100 text-center py-3">
+      <div class="text-muted small mb-1">RECORD &amp; ROI</div>
+      <div class="fw-bold" style="font-size:1.3rem;">
+        <span class="text-success">{{ wins }}</span>
+        <span class="text-muted">–</span>
+        <span class="text-danger">{{ losses }}</span>
+        {% if pending > 0 %}
+        <span class="text-muted">–{{ pending }}</span>
+        {% endif %}
+      </div>
+      <div class="{% if roi > 0 %}text-success{% elif roi < 0 %}text-danger{% else %}text-muted{% endif %} fw-bold">
+        {{ '+' if roi > 0 else '' }}{{ "%.1f"|format(roi) }}% ROI
+      </div>
+    </div>
+  </div>
+
+  <div class="col-6 col-md-3">
+    <div class="card bg-black border-secondary h-100 text-center py-3">
+      <div class="text-muted small mb-1">WIN RATE</div>
+      <div class="fw-bold text-light" style="font-size:1.6rem;">
+        {% if (wins + losses) > 0 %}
+          {{ "%.1f"|format(wins / (wins + losses) * 100) }}%
+        {% else %}—{% endif %}
+      </div>
+      <div class="text-muted" style="font-size:0.72rem;">
+        {{ wins + losses }} graded · {{ pending }} pending
+      </div>
+    </div>
+  </div>
+
+</div>
+
+<!-- Bankroll Growth Chart -->
+<div class="card bg-black border-secondary mb-4">
+  <div class="card-header text-muted text-uppercase small">
+    <i class="bi bi-graph-up"></i> Bankroll Over Time
+  </div>
+  <div class="card-body py-2">
+    <div id="bankrollChart" style="height:260px;"></div>
+  </div>
+</div>
+
+<div class="row g-3">
+
+  <!-- Manual Entry -->
+  <div class="col-md-4">
+    <div class="card bg-black border-secondary h-100">
+      <div class="card-header text-muted text-uppercase small">
+        <i class="bi bi-pencil"></i> Manual Adjustment
+      </div>
+      <div class="card-body">
+        <form method="POST" action="{{ url_for('bankroll') }}">
+          <div class="mb-2">
+            <label class="form-label small text-muted">Win (+) or Loss (–) Amount</label>
+            <input type="number" name="change" class="form-control bg-dark text-light border-secondary"
+                   placeholder="e.g. 55 or -30" step="0.01" required>
+          </div>
+          <div class="mb-3">
+            <label class="form-label small text-muted">Note</label>
+            <input type="text" name="note" class="form-control bg-dark text-light border-secondary"
+                   placeholder="e.g. Yankees ML +155">
+          </div>
+          <button type="submit" class="btn btn-success w-100">
+            <i class="bi bi-plus-circle"></i> Record
+          </button>
+        </form>
+        <div class="text-muted mt-3" style="font-size:0.75rem;">
+          Use this for deposits, withdrawals, or bets placed outside the tracker.
+          Bets marked as "Placed" on game pages are logged automatically.
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- Transaction History -->
+  <div class="col-md-8">
+    <div class="card bg-black border-secondary">
+      <div class="card-header text-muted text-uppercase small d-flex justify-content-between">
+        <span><i class="bi bi-clock-history"></i> Transaction History</span>
+        <a href="{{ url_for('bets_page', filter='placed') }}" class="text-info" style="font-size:0.78rem;">
+          View all placed bets →
+        </a>
+      </div>
+      <div class="card-body p-0">
+        <div class="table-responsive" style="max-height:400px; overflow-y:auto;">
+          <table class="table table-dark table-hover table-sm mb-0" style="font-size:0.82rem;">
+            <thead class="table-secondary text-dark sticky-top">
+              <tr><th>Date</th><th>Change</th><th>Balance</th><th>Note</th></tr>
+            </thead>
+            <tbody>
+              {% for log in history %}
+              <tr>
+                <td><small class="text-muted">{{ log.date.strftime('%m/%d %I:%M%p') }}</small></td>
+                <td class="fw-bold {% if log.change > 0 %}text-success{% elif log.change < 0 %}text-danger{% else %}text-muted{% endif %}">
+                  {{ '+' if log.change > 0 else '' }}${{ "%.2f"|format(log.change) }}
+                </td>
+                <td>${{ "%.2f"|format(log.amount) }}</td>
+                <td><small class="text-muted">{{ log.note }}</small></td>
+              </tr>
+              {% endfor %}
+              {% if not history %}
+              <tr><td colspan="4" class="text-center text-muted py-3">No transactions yet.</td></tr>
+              {% endif %}
+            </tbody>
+          </table>
+        </div>
+      </div>
+    </div>
+  </div>
+
+</div>
+{% endblock %}
+
+{% block scripts %}
+<script>
+const dates   = {{ chart_dates | tojson }};
+const amounts = {{ chart_amounts | tojson }};
+const start   = {{ bankroll_start }};
+
+// Color the line green if up, red if down
+const lastVal  = amounts.length ? amounts[amounts.length - 1] : start;
+const lineColor = lastVal >= start ? '#198754' : '#dc3545';
+
+// Shade the area under the curve based on current P&L
+const fillColor = lastVal >= start
+  ? 'rgba(25, 135, 84, 0.15)'
+  : 'rgba(220, 53, 69, 0.15)';
+
+const trace = {
+  x: dates,
+  y: amounts,
+  type: 'scatter',
+  mode: 'lines+markers',
+  line:   { color: lineColor, width: 2 },
+  marker: { color: lineColor, size: 5 },
+  fill:   'tozeroy',
+  fillcolor: fillColor,
+  name: 'Bankroll',
+};
+
+// Starting bankroll reference line
+const refLine = {
+  type: 'scatter', mode: 'lines',
+  x: [dates[0] || '', dates[dates.length - 1] || ''],
+  y: [start, start],
+  line: { color: '#6c757d', width: 1, dash: 'dot' },
+  name: `Start $${start.toFixed(0)}`,
+};
+
+Plotly.newPlot('bankrollChart', [trace, refLine], {
+  paper_bgcolor: 'transparent',
+  plot_bgcolor:  'transparent',
+  font:   { color: '#adb5bd', size: 11 },
+  margin: { t: 10, b: 50, l: 60, r: 10 },
+  xaxis: {
+    gridcolor: '#2d2d2d',
+    tickangle: -30,
+    type: 'category',
+    tickmode: amounts.length > 15 ? 'auto' : 'linear',
+    nticks: Math.min(amounts.length, 10),
+  },
+  yaxis: {
+    gridcolor: '#2d2d2d',
+    tickprefix: '$',
+    tickformat: ',.0f',
+  },
+  legend: { x: 0.01, y: 0.98, font: { size: 10 } },
+  showlegend: true,
+}, { responsive: true, displayModeBar: false });
+</script>
+{% endblock %}

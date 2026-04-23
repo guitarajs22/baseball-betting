@@ -1,0 +1,521 @@
+{% extends "base.html" %}
+{% block title %}Backtest — Baseball Betting{% endblock %}
+
+{% block content %}
+<div class="d-flex justify-content-between align-items-center mb-4">
+  <h4><i class="bi bi-clock-history"></i> Model Backtester</h4>
+  <span class="text-muted small">
+    Tests whether the simulation model finds edges vs. historical lines
+  </span>
+</div>
+
+<!-- ── Real-odds setup banner ────────────────────────────────────────────── -->
+<div class="alert alert-info border-info mb-3">
+  <div class="d-flex justify-content-between align-items-start">
+    <div>
+      <i class="bi bi-database-check"></i>
+      <strong>Historical odds status:</strong>
+      {% if hist_odds_count and hist_odds_count > 0 %}
+        <span class="text-success fw-bold">{{ "{:,}".format(hist_odds_count) }} closing-line rows loaded</span>
+        — the backtest will use real market prices when available, falling back to -110 only for missing games.
+      {% else %}
+        <span class="text-warning fw-bold">No historical odds imported yet.</span>
+        The backtest will use a flat <strong>-110 / -110</strong> line for every game.
+        Import real odds first for meaningful results.
+      {% endif %}
+    </div>
+    <button class="btn btn-outline-info btn-sm ms-3 text-nowrap"
+            type="button" data-bs-toggle="collapse" data-bs-target="#oddsImportGuide">
+      <i class="bi bi-download"></i> How to import odds
+    </button>
+  </div>
+</div>
+
+<!-- Collapsible import guide -->
+<div class="collapse mb-3" id="oddsImportGuide">
+  <div class="card bg-black border-info">
+    <div class="card-header text-info text-uppercase small">
+      <i class="bi bi-journal-text"></i> How to Import Historical Closing-Line Odds (Free)
+    </div>
+    <div class="card-body small">
+      <p class="text-muted mb-2">
+        We use the <strong>ArnavSaraogi mlb-odds-scraper</strong> dataset — free, covers 2021–2025,
+        includes moneyline + run line + totals from DraftKings, FanDuel, BetMGM, Caesars, Bet365, BetRivers.
+      </p>
+      <ol class="mb-3">
+        <li class="mb-1">
+          Go to
+          <a href="https://github.com/ArnavSaraogi/mlb-odds-scraper/releases" target="_blank" class="text-info">
+            github.com/ArnavSaraogi/mlb-odds-scraper/releases
+          </a>
+        </li>
+        <li class="mb-1">
+          Download the latest release asset — look for a file called
+          <code>mlb_odds.json</code> or similar (~76 MB).
+        </li>
+        <li class="mb-1">
+          Save it anywhere on your Mac — for example your Downloads folder.
+        </li>
+        <li class="mb-1">
+          Open Terminal and run (replacing the path with where you saved the file):
+          <pre class="bg-dark rounded p-2 mt-1 mb-0" style="font-size:0.8rem;">cd "/Users/{{ username or 'andrewsilva' }}/App Building/baseball-betting"
+source venv/bin/activate
+python import_historical_odds.py --file ~/Downloads/mlb_odds.json --year 2024</pre>
+        </li>
+        <li class="mb-1">
+          Wait a minute for it to finish, then reload this page. The green counter above will update.
+        </li>
+      </ol>
+      <div class="text-muted" style="font-size:0.8rem;">
+        <i class="bi bi-lightbulb"></i>
+        <strong>Tip:</strong> Add <code>--year 2024</code> to only load 2024 data (much faster).
+        You can always re-run with <code>--year 2023</code> etc. later to add more seasons.
+        The script is safe to run multiple times — duplicates are automatically skipped.
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- ── Info banner ────────────────────────────────────────────────────────── -->
+<div class="alert alert-secondary border-secondary mb-4 small">
+  <i class="bi bi-info-circle"></i>
+  <strong>How the backtest works:</strong>
+  Fetches real historical game scores from the MLB API, runs 10,000 Monte Carlo simulations
+  per game using your current player stats, then checks whether a bet at the
+  <em>actual closing line</em> (when available) would have been profitable.
+  The backtest covers <strong>moneyline, totals, and run line</strong> bets — totals and run
+  line are only evaluated when real historical prices are available.
+</div>
+
+<!-- ── Configuration form ───────────────────────────────────────────────── -->
+<div class="row g-3 mb-4">
+  <div class="col-lg-5">
+    <div class="card bg-black border-secondary">
+      <div class="card-header text-muted text-uppercase small">
+        <i class="bi bi-sliders"></i> Run Configuration
+      </div>
+      <div class="card-body" id="configCard">
+        <form id="backtestForm">
+          <div class="row g-2 mb-3">
+            <div class="col-6">
+              <label class="form-label small text-muted">Start Date</label>
+              <input type="date" name="start_date" id="startDate"
+                     class="form-control form-control-sm bg-dark text-light border-secondary"
+                     value="2024-04-01" required>
+            </div>
+            <div class="col-6">
+              <label class="form-label small text-muted">End Date</label>
+              <input type="date" name="end_date" id="endDate"
+                     class="form-control form-control-sm bg-dark text-light border-secondary"
+                     value="2024-06-30" required>
+            </div>
+          </div>
+
+          <div class="row g-2 mb-3">
+            <div class="col-4">
+              <label class="form-label small text-muted">Min Edge %</label>
+              <input type="number" name="min_edge" id="minEdge"
+                     class="form-control form-control-sm bg-dark text-light border-secondary"
+                     value="1.5" step="0.5" min="0" max="20">
+              <div class="text-muted" style="font-size:0.7rem;">Only bet when model edge ≥ this</div>
+            </div>
+            <div class="col-4">
+              <label class="form-label small text-muted">Kelly Fraction</label>
+              <input type="number" name="kelly_fraction" id="kellyFraction"
+                     class="form-control form-control-sm bg-dark text-light border-secondary"
+                     value="0.5" step="0.05" min="0.1" max="1.0">
+              <div class="text-muted" style="font-size:0.7rem;">0.5 = half-Kelly (recommended)</div>
+            </div>
+            <div class="col-4">
+              <label class="form-label small text-muted">Starting Bankroll</label>
+              <input type="number" name="bankroll_start" id="bankrollStart"
+                     class="form-control form-control-sm bg-dark text-light border-secondary"
+                     value="1000" step="100" min="100">
+            </div>
+          </div>
+
+          <!-- Quick presets -->
+          <div class="mb-3">
+            <div class="text-muted small mb-1">Quick Presets</div>
+            <div class="d-flex gap-2 flex-wrap">
+              <button type="button" class="btn btn-outline-secondary btn-sm"
+                      onclick="setPreset('2024-04-01','2024-06-30')">Apr–Jun 2024</button>
+              <button type="button" class="btn btn-outline-secondary btn-sm"
+                      onclick="setPreset('2024-07-01','2024-09-30')">Jul–Sep 2024</button>
+              <button type="button" class="btn btn-outline-secondary btn-sm"
+                      onclick="setPreset('2024-04-01','2024-09-30')">Full 2024 Season</button>
+              <button type="button" class="btn btn-outline-secondary btn-sm"
+                      onclick="setPreset('2024-05-01','2024-05-31')">May 2024 (fast)</button>
+            </div>
+          </div>
+
+          <!-- Estimated time warning -->
+          <div id="timeEstimate" class="text-warning small mb-3" style="display:none;">
+            <i class="bi bi-hourglass"></i> <span id="timeEstText"></span>
+          </div>
+
+          <button type="submit" id="runBtn" class="btn btn-success w-100">
+            <i class="bi bi-play-fill"></i> Run Backtest
+          </button>
+        </form>
+      </div>
+    </div>
+  </div>
+
+  <!-- ── Progress / summary side ─────────────────────────────────────────── -->
+  <div class="col-lg-7">
+
+    <!-- Progress (shown while running) -->
+    <div id="progressSection" class="card bg-black border-warning mb-3" style="display:none;">
+      <div class="card-header text-warning text-uppercase small">
+        <span class="spinner-border spinner-border-sm me-2"></span> Running…
+      </div>
+      <div class="card-body">
+        <div id="progressStatus" class="text-muted small mb-2">Starting…</div>
+        <div class="progress mb-1" style="height:18px;">
+          <div id="progressBar" class="progress-bar progress-bar-striped progress-bar-animated bg-warning"
+               style="width:0%"></div>
+        </div>
+        <div id="progressLabel" class="text-muted" style="font-size:0.75rem;">0 / 0 days</div>
+        <div class="text-muted mt-2" style="font-size:0.75rem;">
+          <i class="bi bi-info-circle"></i>
+          Each game runs 10,000 simulations. A full season can take 20–60+ minutes.
+          You can navigate away — the backtest keeps running in the background.
+        </div>
+      </div>
+    </div>
+
+    <!-- Quick stats (shown when results exist) -->
+    {% if results %}
+    <div id="summaryCards" class="row g-2">
+      <div class="col-6 col-md-4">
+        <div class="card bg-black border-secondary text-center py-2">
+          <div class="text-muted" style="font-size:0.68rem;">BETS PLACED</div>
+          <div class="fw-bold fs-5" id="statBets">{{ results.bets_placed }}</div>
+          <div class="text-muted" style="font-size:0.7rem;">
+            {{ results.bets_won }}W – {{ results.bets_placed - results.bets_won }}L
+          </div>
+        </div>
+      </div>
+      <div class="col-6 col-md-4">
+        <div class="card bg-black text-center py-2
+          {% if results.roi_pct > 0 %}border-success{% elif results.roi_pct < 0 %}border-danger{% else %}border-secondary{% endif %}">
+          <div class="text-muted" style="font-size:0.68rem;">ROI</div>
+          <div class="fw-bold fs-5
+            {% if results.roi_pct > 0 %}text-success{% elif results.roi_pct < 0 %}text-danger{% else %}text-muted{% endif %}"
+               id="statRoi">
+            {{ '+' if results.roi_pct > 0 else '' }}{{ "%.1f"|format(results.roi_pct) }}%
+          </div>
+          <div class="text-muted" style="font-size:0.7rem;">${{ "%.0f"|format(results.total_wagered) }} wagered</div>
+        </div>
+      </div>
+      <div class="col-6 col-md-4">
+        <div class="card bg-black text-center py-2
+          {% if results.total_profit > 0 %}border-success{% elif results.total_profit < 0 %}border-danger{% else %}border-secondary{% endif %}">
+          <div class="text-muted" style="font-size:0.68rem;">TOTAL P&amp;L</div>
+          <div class="fw-bold fs-5
+            {% if results.total_profit > 0 %}text-success{% elif results.total_profit < 0 %}text-danger{% else %}text-muted{% endif %}"
+               id="statPl">
+            {{ '+' if results.total_profit > 0 else '' }}${{ "%.2f"|format(results.total_profit) }}
+          </div>
+          <div class="text-muted" style="font-size:0.7rem;">
+            ${{ "%.0f"|format(results.starting_bankroll) }} → ${{ "%.0f"|format(results.final_bankroll) }}
+          </div>
+        </div>
+      </div>
+      <div class="col-6 col-md-4">
+        <div class="card bg-black border-secondary text-center py-2">
+          <div class="text-muted" style="font-size:0.68rem;">WIN RATE</div>
+          <div class="fw-bold fs-5">
+            {% if results.bets_placed > 0 %}
+              {{ "%.1f"|format(results.win_rate_pct) }}%
+            {% else %}—{% endif %}
+          </div>
+          <div class="text-muted" style="font-size:0.7rem;">
+            {{ results.bets_placed }} evaluated games
+          </div>
+        </div>
+      </div>
+      <div class="col-6 col-md-4">
+        <div class="card bg-black border-secondary text-center py-2">
+          <div class="text-muted" style="font-size:0.68rem;">DATE RANGE</div>
+          <div class="fw-bold" style="font-size:0.85rem;">{{ results.start_date }}</div>
+          <div class="text-muted" style="font-size:0.7rem;">to {{ results.end_date }}</div>
+        </div>
+      </div>
+      <div class="col-6 col-md-4">
+        <div class="card bg-black border-secondary text-center py-2">
+          <div class="text-muted" style="font-size:0.68rem;">ODDS SOURCE</div>
+          {% if results.real_odds_bets is defined %}
+          <div class="fw-bold" style="font-size:0.85rem;">
+            <span class="text-success">{{ results.real_odds_bets }}</span>
+            <span class="text-muted"> / </span>
+            <span>{{ results.bets_placed }}</span>
+          </div>
+          <div class="text-muted" style="font-size:0.7rem;">bets used real closing lines</div>
+          {% else %}
+          <div class="fw-bold fs-5 text-warning">—</div>
+          <div class="text-muted" style="font-size:0.7rem;">no odds data</div>
+          {% endif %}
+        </div>
+      </div>
+    </div>
+    {% else %}
+    <div class="card bg-black border-secondary h-100" id="noResultsCard">
+      <div class="card-body d-flex flex-column align-items-center justify-content-center text-center py-5">
+        <i class="bi bi-graph-up text-muted" style="font-size:3rem;"></i>
+        <div class="text-muted mt-3">No backtest results yet.</div>
+        <div class="text-muted small">Configure the settings and click <strong>Run Backtest</strong>.</div>
+      </div>
+    </div>
+    {% endif %}
+
+  </div>
+</div>
+
+{% if results and results.bets %}
+<!-- ── Bankroll growth chart ─────────────────────────────────────────────── -->
+<div class="card bg-black border-secondary mb-4">
+  <div class="card-header text-muted text-uppercase small d-flex justify-content-between">
+    <span><i class="bi bi-graph-up"></i> Simulated Bankroll Growth</span>
+    <span class="text-muted" style="font-size:0.72rem;">Based on bets with edge ≥ threshold at -110 / -110</span>
+  </div>
+  <div class="card-body py-2">
+    <div id="backtestChart" style="height:260px;"></div>
+  </div>
+</div>
+
+<!-- ── Per-bet results table ─────────────────────────────────────────────── -->
+<div class="card bg-black border-secondary">
+  <div class="card-header text-muted text-uppercase small d-flex justify-content-between">
+    <span><i class="bi bi-table"></i> Individual Bets ({{ results.bets | length }} total)</span>
+    <span class="text-muted small">Sorted oldest → newest</span>
+  </div>
+  <div class="card-body p-0">
+    <div class="table-responsive" style="max-height:480px; overflow-y:auto;">
+      <table class="table table-dark table-hover table-sm mb-0" style="font-size:0.8rem;">
+        <thead class="table-secondary text-dark sticky-top">
+          <tr>
+            <th>Date</th>
+            <th>Matchup</th>
+            <th>Type</th>
+            <th>Side</th>
+            <th>Our %</th>
+            <th>Impl %</th>
+            <th>Edge</th>
+            <th>EV%</th>
+            <th>Bet</th>
+            <th>Odds</th>
+            <th>Book</th>
+            <th>Result</th>
+            <th>Profit</th>
+            <th>Bankroll</th>
+          </tr>
+        </thead>
+        <tbody>
+          {% for bet in results.bets %}
+          <tr class="{% if bet.won == 'True' %}table-success{% else %}table-danger{% endif %}">
+            <td class="text-muted"><small>{{ bet.date }}</small></td>
+            <td><small>{{ bet.matchup }}</small></td>
+            <td>
+              <span class="badge
+                {% if bet.bet_type == 'moneyline' %}bg-primary
+                {% elif bet.bet_type == 'totals' %}bg-info text-dark
+                {% else %}bg-secondary{% endif %}"
+                style="font-size:0.65rem;">{{ bet.bet_type | default('ML') }}</span>
+            </td>
+            <td class="fw-bold text-uppercase">{{ bet.side }}</td>
+            <td>{{ "%.1f"|format(bet.our_prob | float * 100) }}%</td>
+            <td>{{ "%.1f"|format(bet.implied_prob | float * 100) }}%</td>
+            <td class="fw-bold {% if bet.edge_pct | float >= 3 %}text-success{% elif bet.edge_pct | float > 0 %}text-warning{% else %}text-danger{% endif %}">
+              +{{ "%.1f"|format(bet.edge_pct | float) }}%
+            </td>
+            <td class="{% if bet.ev_pct | float > 0 %}text-success{% else %}text-danger{% endif %}">
+              {{ '+' if bet.ev_pct | float > 0 else '' }}{{ "%.1f"|format(bet.ev_pct | float) }}%
+            </td>
+            <td>${{ "%.0f"|format(bet.bet_size | float) }}</td>
+            <td class="{% if bet.odds | int > 0 %}text-success{% else %}text-light{% endif %}">
+              {{ '+' if bet.odds | int > 0 else '' }}{{ bet.odds | int }}
+            </td>
+            <td>
+              <small class="text-muted">
+                {% if bet.odds_source and bet.odds_source != 'flat_-110' %}
+                  {{ bet.odds_source | replace('_',' ') | title }}
+                {% else %}
+                  <span class="text-warning">-110 flat</span>
+                {% endif %}
+              </small>
+            </td>
+            <td>
+              {% if bet.won == 'True' %}
+                <span class="badge bg-success">WIN</span>
+              {% else %}
+                <span class="badge bg-danger">LOSS</span>
+              {% endif %}
+            </td>
+            <td class="fw-bold {% if bet.profit | float > 0 %}text-success{% else %}text-danger{% endif %}">
+              {{ '+' if bet.profit | float > 0 else '' }}${{ "%.2f"|format(bet.profit | float) }}
+            </td>
+            <td>${{ "%.0f"|format(bet.bankroll | float) }}</td>
+          </tr>
+          {% endfor %}
+        </tbody>
+      </table>
+    </div>
+  </div>
+</div>
+{% endif %}
+
+{% endblock %}
+
+{% block scripts %}
+<script>
+// ── Date range time estimate ────────────────────────────────────────────────
+function updateEstimate() {
+  const s = document.getElementById('startDate').value;
+  const e = document.getElementById('endDate').value;
+  if (!s || !e) return;
+  const days = Math.max(0, (new Date(e) - new Date(s)) / 86400000);
+  const est  = document.getElementById('timeEstimate');
+  const txt  = document.getElementById('timeEstText');
+  if (days > 0) {
+    // Very rough: ~4 sec/game, ~15 games/day → ~60 sec/day
+    const minMins = Math.ceil(days * 0.5);
+    const maxMins = Math.ceil(days * 2);
+    txt.textContent = `~${days | 0} days of games. Estimated time: ${minMins}–${maxMins} minutes.`;
+    est.style.display = 'block';
+  } else {
+    est.style.display = 'none';
+  }
+}
+document.getElementById('startDate').addEventListener('change', updateEstimate);
+document.getElementById('endDate').addEventListener('change', updateEstimate);
+updateEstimate();
+
+function setPreset(start, end) {
+  document.getElementById('startDate').value = start;
+  document.getElementById('endDate').value   = end;
+  updateEstimate();
+}
+
+// ── Form submit → start backtest ────────────────────────────────────────────
+document.getElementById('backtestForm').addEventListener('submit', function(e) {
+  e.preventDefault();
+  const fd  = new FormData(this);
+  const btn = document.getElementById('runBtn');
+  btn.disabled = true;
+  btn.innerHTML = '<span class="spinner-border spinner-border-sm"></span> Starting…';
+
+  fetch('/backtest/run', { method: 'POST', body: fd })
+    .then(r => r.json())
+    .then(data => {
+      if (data.error) {
+        alert(data.error);
+        btn.disabled = false;
+        btn.innerHTML = '<i class="bi bi-play-fill"></i> Run Backtest';
+      } else {
+        document.getElementById('progressSection').style.display = 'block';
+        pollStatus();
+      }
+    })
+    .catch(() => {
+      alert('Could not connect to the server. Is the app running?');
+      btn.disabled = false;
+      btn.innerHTML = '<i class="bi bi-play-fill"></i> Run Backtest';
+    });
+});
+
+// ── Poll progress ────────────────────────────────────────────────────────────
+let _pollTimer = null;
+
+function pollStatus() {
+  clearTimeout(_pollTimer);
+  fetch('/backtest/status')
+    .then(r => r.json())
+    .then(data => {
+      const bar    = document.getElementById('progressBar');
+      const status = document.getElementById('progressStatus');
+      const label  = document.getElementById('progressLabel');
+
+      status.textContent = data.status || '…';
+
+      if (data.total > 0) {
+        const pct = Math.round(data.progress / data.total * 100);
+        bar.style.width = pct + '%';
+        label.textContent = `${data.progress} / ${data.total} days processed`;
+      }
+
+      if (data.running) {
+        _pollTimer = setTimeout(pollStatus, 2000);
+      } else if (data.status === 'complete') {
+        // Done — reload to show results
+        window.location.reload();
+      } else if (data.status === 'error') {
+        document.getElementById('progressSection').style.display = 'none';
+        alert('Backtest error: ' + (data.error || 'Unknown error'));
+        const btn = document.getElementById('runBtn');
+        btn.disabled = false;
+        btn.innerHTML = '<i class="bi bi-play-fill"></i> Run Backtest';
+      }
+    })
+    .catch(() => {
+      _pollTimer = setTimeout(pollStatus, 5000);
+    });
+}
+
+// ── Resume polling if a run is currently in progress ───────────────────────
+{% if state.running %}
+document.getElementById('progressSection').style.display = 'block';
+document.getElementById('runBtn').disabled = true;
+document.getElementById('runBtn').innerHTML = '<span class="spinner-border spinner-border-sm"></span> Running…';
+pollStatus();
+{% endif %}
+
+// ── Plotly bankroll chart ───────────────────────────────────────────────────
+{% if results and results.bets %}
+(function() {
+  const bets = {{ results.bets | tojson }};
+  const labels = bets.map((b, i) => `#${i+1} ${b.date}`);
+  const values = bets.map(b => parseFloat(b.bankroll));
+  const start  = {{ results.starting_bankroll }};
+  const last   = values.length ? values[values.length - 1] : start;
+  const lineColor = last >= start ? '#198754' : '#dc3545';
+  const fillColor = last >= start ? 'rgba(25,135,84,0.15)' : 'rgba(220,53,69,0.15)';
+
+  const trace = {
+    x: labels, y: values,
+    type: 'scatter', mode: 'lines',
+    line: { color: lineColor, width: 2 },
+    fill: 'tozeroy', fillcolor: fillColor,
+    name: 'Bankroll',
+  };
+  const refLine = {
+    type: 'scatter', mode: 'lines',
+    x: [labels[0] || '', labels[labels.length - 1] || ''],
+    y: [start, start],
+    line: { color: '#6c757d', width: 1, dash: 'dot' },
+    name: `Start $${start.toFixed(0)}`,
+  };
+
+  Plotly.newPlot('backtestChart', [trace, refLine], {
+    paper_bgcolor: 'transparent', plot_bgcolor: 'transparent',
+    font:   { color: '#adb5bd', size: 11 },
+    margin: { t: 10, b: 60, l: 65, r: 10 },
+    xaxis: {
+      gridcolor: '#2d2d2d',
+      tickangle: -40,
+      tickmode: values.length > 20 ? 'auto' : 'linear',
+      nticks: Math.min(values.length, 15),
+    },
+    yaxis: {
+      gridcolor: '#2d2d2d',
+      tickprefix: '$',
+      tickformat: ',.0f',
+    },
+    legend: { x: 0.01, y: 0.98, font: { size: 10 } },
+    showlegend: true,
+  }, { responsive: true, displayModeBar: false });
+})();
+{% endif %}
+</script>
+{% endblock %}

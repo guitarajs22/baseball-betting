@@ -1,0 +1,2771 @@
+{% extends "base.html" %}
+{% from "wind_diagram.html" import wind_diagram %}
+{% block title %}{{ away_team.abbreviation if away_team else '?' }} @ {{ home_team.abbreviation if home_team else '?' }} — Detail{% endblock %}
+
+{% block content %}
+<div class="d-flex justify-content-between align-items-center mb-2">
+  <h5>
+    <span class="text-info">{{ away_team.name if away_team else 'Away' }}</span>
+    <span class="mx-2 text-muted">@</span>
+    <span class="text-warning">{{ home_team.name if home_team else 'Home' }}</span>
+    <small class="text-muted ms-2">{{ game.game_date.strftime('%B %d, %Y') }}</small>
+    {% if game.game_type == 'S' %}
+    <span class="badge bg-info text-dark ms-2">Spring Training</span>
+    {% elif game.game_type in ('F','D','L','W') %}
+    <span class="badge bg-danger ms-2">Postseason</span>
+    {% endif %}
+    {% if game.is_doubleheader %}
+    <span class="badge bg-warning text-dark ms-2" title="Doubleheader">
+      DH Game {{ game.game_number }}
+    </span>
+    {% endif %}
+    {% if game.status == 'final' %}
+    <span class="badge bg-secondary ms-2">Final</span>
+    {% elif game.status == 'live' %}
+    <span class="badge bg-danger ms-2 blink">Live</span>
+    {% endif %}
+  </h5>
+  <div class="d-flex gap-2">
+    {% if game.status != 'final' %}
+    <button class="btn btn-outline-info btn-sm"
+            data-bs-toggle="collapse" data-bs-target="#lineupEditor"
+            aria-expanded="{{ 'true' if not home_lineup and not away_lineup else 'false' }}">
+      <i class="bi bi-pencil-square"></i>
+      {% if home_lineup or away_lineup %}Edit Lineup{% else %}Enter Lineup{% endif %}
+    </button>
+    <button class="btn btn-outline-warning btn-sm"
+            data-bs-toggle="collapse" data-bs-target="#manualOddsEditor">
+      <i class="bi bi-pencil"></i> Enter Odds
+    </button>
+    {% if game.mlb_game_id %}
+    <button class="btn btn-primary btn-sm" id="quickSimBtn"
+            onclick="quickSimulate({{ game.id }}, this)"
+            title="Auto-import the official MLB lineup and run 10,000 simulations — one click!">
+      <i class="bi bi-lightning-fill"></i>
+      {% if sim %}Re-Import &amp; Simulate{% else %}Quick Simulate{% endif %}
+    </button>
+    {% endif %}
+    <button class="btn btn-outline-success btn-sm" onclick="runSim({{ game.id }}, this)"
+            title="Run simulation with the lineup currently saved">
+      <i class="bi bi-play-fill"></i>
+      {% if sim %}Re-Simulate{% else %}Simulate{% endif %}
+    </button>
+    {% else %}
+    <button class="btn btn-outline-warning btn-sm"
+            data-bs-toggle="collapse" data-bs-target="#manualOddsEditor">
+      <i class="bi bi-pencil"></i> Enter Odds
+    </button>
+    {% endif %}
+    <a href="{{ url_for('games_list') }}" class="btn btn-outline-secondary btn-sm">← Games</a>
+  </div>
+</div>
+
+<!-- Quick Simulate status banner (hidden by default) -->
+<div id="quickSimStatus" class="d-none alert py-2 small mb-2" role="alert"></div>
+
+<!-- Stale Data Banner -->
+{% if game.status != 'final' %}
+{% set _stale_items = [] %}
+{% if odds_stale %}{% set _ = _stale_items.append('Odds (' + odds_age_str + ')') %}{% endif %}
+{% if weather_stale %}{% set _ = _stale_items.append('Weather (' + weather_age_str + ')') %}{% endif %}
+{% if weather_missing %}{% set _ = _stale_items.append('Weather (not fetched)') %}{% endif %}
+{% if sim_stale %}{% set _ = _stale_items.append('Simulation (run before odds refresh)') %}{% endif %}
+{% if lineup_missing %}{% set _ = _stale_items.append('Lineup (not entered)') %}{% endif %}
+{% if _stale_items %}
+<div class="alert alert-warning py-2 small mb-2 d-flex align-items-center gap-2" style="background:#2a2000; border-color:#856404;">
+  <i class="bi bi-exclamation-triangle-fill text-warning"></i>
+  <span><strong>Stale data:</strong> {{ _stale_items | join(' · ') }}</span>
+</div>
+{% endif %}
+{% endif %}
+
+<!-- Final Score Banner -->
+{% if game.status == 'final' %}
+<div class="alert mb-3 py-2" style="background:#0d1f0d; border:1px solid #28a745;">
+  <div class="d-flex align-items-center justify-content-center gap-4">
+    <div class="text-center">
+      <div class="text-info small">{{ away_team.abbreviation if away_team else 'Away' }}</div>
+      <div class="fw-bold" style="font-size:1.4rem;">{{ game.away_score }}</div>
+    </div>
+    <div class="text-muted fw-bold">FINAL</div>
+    <div class="text-center">
+      <div class="text-warning small">{{ home_team.abbreviation if home_team else 'Home' }}</div>
+      <div class="fw-bold" style="font-size:1.4rem;">{{ game.home_score }}</div>
+    </div>
+    <div class="text-muted small ms-4">
+      Total: <strong class="text-light">{{ game.total_runs }}</strong> runs
+    </div>
+  </div>
+</div>
+{% endif %}
+
+<div class="row g-2">
+
+  <!-- Umpire Info + Wind Diagram -->
+  <div class="col-12">
+    <div class="card bg-black border-secondary">
+      <div class="card-body py-2 px-3">
+        <div class="d-flex align-items-center gap-4 flex-wrap">
+          <!-- Wind diagram — shown when weather data is available -->
+          {% if game.wind_deg is not none or (game.ballpark and game.ballpark.roof_type == 'dome') %}
+          <div class="d-flex align-items-center gap-2 me-2">
+            {{ wind_diagram(game, size=90) }}
+            <div style="font-size:0.75rem; color:#9ca3af; line-height:1.7;">
+              <div class="fw-semibold text-light" style="font-size:0.8rem;">
+                {{ game.ballpark.name if game.ballpark else '' }}
+              </div>
+              {% if game.temperature_f is not none %}
+              <div>{{ "%.0f"|format(game.temperature_f) }}°F</div>
+              {% endif %}
+              {% if game.humidity_pct is not none %}
+              <div>{{ "%.0f"|format(game.humidity_pct) }}% humidity</div>
+              {% endif %}
+              {% if game.pressure_inhg is not none %}
+              <div>{{ "%.2f"|format(game.pressure_inhg) }} inHg</div>
+              {% endif %}
+            </div>
+          </div>
+          <div class="vr opacity-25"></div>
+          {% endif %}
+          <span class="text-muted small text-uppercase">Home Plate Umpire</span>
+          {% if game.umpire_id %}
+            {% set ump = game.home_starter %}  {# placeholder — passed via template context #}
+            <span class="fw-bold text-light">{{ umpire.name if umpire else '—' }}</span>
+            {% if umpire %}
+              {% set rpi = umpire.runs_per_game_impact or 0 %}
+              {% set wri = umpire.walk_rate_impact or 0 %}
+              {% set kri = umpire.k_rate_impact or 0 %}
+              <span class="badge {% if rpi > 0.05 %}bg-success{% elif rpi < -0.05 %}bg-danger{% else %}bg-secondary{% endif %}">
+                Runs {{ '+' if rpi > 0 else '' }}{{ "%.2f"|format(rpi) }}/game
+              </span>
+              <span class="badge {% if wri > 0.03 %}bg-warning text-dark{% elif wri < -0.03 %}bg-info text-dark{% else %}bg-secondary{% endif %}">
+                Walks {{ '+' if wri > 0 else '' }}{{ "%.0f"|format(wri * 100) }}%
+              </span>
+              <span class="badge {% if kri > 0.03 %}bg-info text-dark{% elif kri < -0.03 %}bg-warning text-dark{% else %}bg-secondary{% endif %}">
+                K's {{ '+' if kri > 0 else '' }}{{ "%.0f"|format(kri * 100) }}%
+              </span>
+              {% if umpire.called_strike_rate %}
+              <span class="text-muted small">Strike Zone: {{ "%.1f"|format(umpire.called_strike_rate * 100) }}% CSR</span>
+              {% endif %}
+            {% endif %}
+          {% else %}
+            <span class="text-muted fst-italic">Not assigned yet — will auto-fill when MLB posts the assignment</span>
+          {% endif %}
+          <button class="ms-auto btn btn-outline-secondary btn-sm"
+                  data-bs-toggle="collapse" data-bs-target="#lineupEditor">
+            <i class="bi bi-person-badge"></i> Change Umpire / Weather
+          </button>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- Simulation Results -->
+  {% if sim %}
+  <div class="col-12">
+    <div class="card border-0" style="background:#111; border-radius:14px;">
+
+      {# ── Stat card macro ── #}
+      {%- macro sc(label, value, color='#f0f0f0') -%}
+      <div class="col-3">
+        <div style="background:#1c1c1e; border-radius:10px; padding:12px 14px;">
+          <div style="font-size:0.68rem; color:#888; margin-bottom:4px; white-space:nowrap; overflow:hidden; text-overflow:ellipsis;">{{ label }}</div>
+          <div style="font-size:1.35rem; font-weight:700; color:{{ color }}; line-height:1.2;">{{ value }}</div>
+        </div>
+      </div>
+      {%- endmacro -%}
+
+      <!-- Win probability header -->
+      <div class="px-3 pt-3 pb-2">
+        <div class="d-flex justify-content-between align-items-start mb-2">
+          <div>
+            <span style="font-size:1.5rem; font-weight:800; color:{% if sim.away_win_pct > sim.home_win_pct %}#28a745{% else %}#888{% endif %};">{{ away_team.abbreviation if away_team else 'Away' }}</span>
+            <span style="font-size:1.1rem; font-weight:700; color:{% if sim.away_win_pct > sim.home_win_pct %}#28a745{% else %}#888{% endif %}; margin-left:6px;">{{ "%.1f"|format(sim.away_win_pct * 100) }}%</span>
+            <div style="font-size:0.72rem; color:#888; margin-top:1px;">{{ 'favored' if sim.away_win_pct > sim.home_win_pct else 'underdog' }}</div>
+          </div>
+          <div class="text-center" style="font-size:0.72rem; color:#555; padding-top:4px;">
+            <i class="bi bi-dice-3 text-success"></i> {{ "{:,}".format(sim.num_simulations | int) if sim.num_simulations else '10,000' }} sims · {{ sim.created_at.strftime('%I:%M %p') }}
+            {% if sim_stale %}<br><span class="badge bg-warning text-dark mt-1" style="font-size:0.62rem;"><i class="bi bi-arrow-repeat"></i> Re-simulate</span>{% endif %}
+          </div>
+          <div class="text-end">
+            <span style="font-size:1.5rem; font-weight:800; color:{% if sim.home_win_pct > sim.away_win_pct %}#28a745{% else %}#888{% endif %};">{{ home_team.abbreviation if home_team else 'Home' }}</span>
+            <span style="font-size:1.1rem; font-weight:700; color:{% if sim.home_win_pct > sim.away_win_pct %}#28a745{% else %}#888{% endif %}; margin-left:6px;">{{ "%.1f"|format(sim.home_win_pct * 100) }}%</span>
+            <div style="font-size:0.72rem; color:#888; margin-top:1px;">{{ 'favored' if sim.home_win_pct > sim.away_win_pct else 'underdog' }}</div>
+          </div>
+        </div>
+        <!-- Progress bar -->
+        <div class="d-flex rounded-pill overflow-hidden" style="height:7px; background:#333;">
+          <div style="width:{{ '%.1f'|format(sim.away_win_pct * 100) }}%; background:{% if sim.away_win_pct > sim.home_win_pct %}#28a745{% else %}#555{% endif %}; transition:width .4s;"></div>
+        </div>
+        <div class="d-flex justify-content-between mt-1">
+          <small style="font-size:0.68rem; color:#555;">{{ away_team.abbreviation if away_team else 'Away' }}</small>
+          <small style="font-size:0.68rem; color:#555;">{{ home_team.abbreviation if home_team else 'Home' }}</small>
+        </div>
+      </div>
+
+      <!-- Pill tabs -->
+      <div class="px-3 pb-2">
+        <ul class="nav gap-2" id="simTabs" role="tablist">
+          <li class="nav-item" role="presentation">
+            <button class="nav-link active px-3 py-1 rounded-pill" id="fullgame-tab"
+                    data-bs-toggle="tab" data-bs-target="#fullgame-pane" type="button" role="tab"
+                    style="font-size:0.82rem; background:#2a2a2a; border:1px solid #3a3a3a; color:#f0f0f0;">
+              Full game
+            </button>
+          </li>
+          <li class="nav-item" role="presentation">
+            <button class="nav-link px-3 py-1 rounded-pill" id="f5-tab"
+                    data-bs-toggle="tab" data-bs-target="#f5-pane" type="button" role="tab"
+                    style="font-size:0.82rem; background:transparent; border:1px solid #3a3a3a; color:#a78bfa;">
+              First 5 innings
+              {% if sim.f5_home_win_pct is none %}
+              <span class="badge bg-secondary ms-1" style="font-size:0.6rem;">No sim</span>
+              {% endif %}
+            </button>
+          </li>
+        </ul>
+      </div>
+
+      <div class="tab-content">
+
+        <!-- ── FULL GAME TAB ─────────────────────────────────────────── -->
+        <div class="tab-pane fade show active" id="fullgame-pane" role="tabpanel">
+          <div class="px-3 pb-3">
+
+            <!-- TOTALS -->
+            <div style="font-size:0.68rem; color:#666; text-transform:uppercase; letter-spacing:.08em; margin-bottom:8px;">Totals</div>
+            <div class="row g-2 mb-3">
+              {{ sc('Avg total', '%.2f'|format(sim.total_avg_runs), '#3b9eff') }}
+              {{ sc('Std dev',   '%.2f'|format(sim.total_std_dev),  '#888') }}
+              {% if sim.over_pct %}
+              {{ sc('Over '  ~ sim.simulated_total_line, '%.1f'|format(sim.over_pct  * 100) ~ '%', '#f0c040' if sim.over_pct  > 0.52 else '#f0f0f0') }}
+              {{ sc('Under ' ~ sim.simulated_total_line, '%.1f'|format(sim.under_pct * 100) ~ '%', '#f0c040' if sim.under_pct > 0.52 else '#f0f0f0') }}
+              {% else %}
+              {{ sc('Over',  '—', '#888') }}
+              {{ sc('Under', '—', '#888') }}
+              {% endif %}
+            </div>
+
+            <!-- RUN LINES -->
+            <div style="font-size:0.68rem; color:#666; text-transform:uppercase; letter-spacing:.08em; margin-bottom:8px;">Run lines</div>
+            <div class="row g-2 mb-3">
+              {{ sc((away_team.abbreviation if away_team else 'Away') ~ ' runs', '%.2f'|format(sim.away_avg_runs), '#28a745' if sim.away_win_pct > sim.home_win_pct else '#f0f0f0') }}
+              {{ sc((home_team.abbreviation if home_team else 'Home') ~ ' runs', '%.2f'|format(sim.home_avg_runs), '#28a745' if sim.home_win_pct > sim.away_win_pct else '#f0f0f0') }}
+              {% if sim.home_cover_runline_pct %}
+              {{ sc((away_team.abbreviation if away_team else 'Away') ~ ' ' ~ away_rl_line, '%.1f'|format(sim.away_cover_runline_pct * 100) ~ '%', '#3b9eff' if sim.away_cover_runline_pct > 0.52 else '#f0f0f0') }}
+              {{ sc((home_team.abbreviation if home_team else 'Home') ~ ' ' ~ home_rl_line, '%.1f'|format(sim.home_cover_runline_pct * 100) ~ '%', '#3b9eff' if sim.home_cover_runline_pct > 0.52 else '#f0f0f0') }}
+              {% else %}
+              <div class="col-6"><div style="background:#1c1c1e; border-radius:10px; padding:12px 14px; color:#555; font-size:0.78rem;">Run line odds not entered</div></div>
+              {% endif %}
+            </div>
+
+            <!-- 1ST INNING -->
+            {% if sim.rifi_pct is not none %}
+            <div style="font-size:0.68rem; color:#666; text-transform:uppercase; letter-spacing:.08em; margin-bottom:8px;">1st inning</div>
+            <div class="row g-2 mb-3">
+              {{ sc('RIFI',  '%.1f'|format(sim.rifi_pct * 100) ~ '%',          '#f0c040' if sim.rifi_pct > 0.54 else '#f0f0f0') }}
+              {{ sc('NRFI',  '%.1f'|format((1-sim.rifi_pct) * 100) ~ '%',      '#f0c040' if (1-sim.rifi_pct) > 0.54 else '#f0f0f0') }}
+              {{ sc((away_team.abbreviation if away_team else 'Away') ~ ' scores 1st', '%.1f'|format(sim.away_fi_score_pct * 100) ~ '%') }}
+              {{ sc((home_team.abbreviation if home_team else 'Home') ~ ' scores 1st', '%.1f'|format(sim.home_fi_score_pct * 100) ~ '%') }}
+            </div>
+            {% endif %}
+
+            <!-- What to bet / Adjust edge buttons -->
+            {% set fg_signals = bet_signals | selectattr('mkt_type', 'equalto', 'fg') | list %}
+            <div class="d-flex justify-content-between align-items-center mt-1">
+              <button class="btn rounded-pill px-3 py-1" style="font-size:0.82rem; background:transparent; border:1px solid #3a3a3a; color:#ccc;"
+                      data-bs-toggle="collapse" data-bs-target="#fgWhatToBet">
+                What to bet &amp; at what price <i class="bi bi-arrow-up-right ms-1"></i>
+              </button>
+              <a href="/settings" class="btn rounded-pill px-3 py-1" style="font-size:0.82rem; background:transparent; border:1px solid #3a3a3a; color:#ccc;">
+                Adjust edge % <i class="bi bi-arrow-right ms-1"></i>
+              </a>
+            </div>
+
+            <!-- What to Bet table (collapsible) -->
+            <div class="collapse mt-2" id="fgWhatToBet">
+            {% if fg_signals %}
+            <div class="table-responsive">
+            <table class="table table-dark table-sm mb-0" style="font-size:0.82rem; border-color:#222;">
+              <thead>
+                <tr style="font-size:0.70rem; color:#6c757d; border-bottom:1px solid #333;">
+                  <th class="ps-2 fw-normal">Market</th>
+                  <th class="fw-normal">Sim%</th>
+                  <th class="fw-normal">Look For</th>
+                  <th class="fw-normal">Kelly Bet</th>
+                  <th class="fw-normal">Book Offering</th>
+                  <th class="fw-normal pe-2">Action</th>
+                </tr>
+              </thead>
+              <tbody>
+              {% for s in fg_signals if 'ml' in s.side %}
+              <tr style="border-color:#222;">
+                <td class="ps-2 fw-bold text-light">{{ s.market }}</td>
+                <td class="fw-bold text-info">{{ "%.1f"|format(s.sim_pct * 100) }}%</td>
+                <td>
+                  <span class="fw-bold {% if s.threshold > 0 %}text-success{% else %}text-light{% endif %}">
+                    {{ '+' if s.threshold > 0 else '' }}{{ s.threshold }}
+                  </span>
+                  <span class="text-muted" style="font-size:0.75rem;"> or better</span>
+                </td>
+                <td class="fw-bold text-warning">${{ "%.0f"|format(s.kelly_at_thr) }}</td>
+                <td>
+                  {% if s.book_price is not none %}
+                    <span class="fw-bold {% if s.book_price > 0 %}text-success{% else %}text-light{% endif %}">
+                      {{ '+' if s.book_price > 0 else '' }}{{ s.book_price }}
+                    </span>
+                    {% if s.book_edge is not none %}
+                    <span class="text-muted" style="font-size:0.72rem;"> (+{{ "%.1f"|format(s.book_edge) }}%)</span>
+                    {% endif %}
+                  {% else %}
+                    <span class="text-muted fst-italic" style="font-size:0.75rem;">no odds entered</span>
+                  {% endif %}
+                </td>
+                <td class="pe-2">
+                  {% if s.book_price is not none %}
+                    {% if s.book_beats %}<span class="badge bg-success px-2 py-1"><i class="bi bi-check-circle-fill"></i> BET{% if s.book_kelly %} ${{ "%.0f"|format(s.book_kelly) }}{% endif %}</span>
+                    {% else %}<span class="badge bg-secondary px-2 py-1"><i class="bi bi-slash-circle"></i> PASS</span>{% endif %}
+                  {% else %}<span class="text-muted" style="font-size:0.72rem;">Enter odds →</span>{% endif %}
+                </td>
+              </tr>
+              {% endfor %}
+
+              {% if sim.score_distribution %}
+              <tr style="border-color:#333; background:rgba(255,255,255,0.03);">
+                <td colspan="6" class="ps-2 py-2">
+                  <div class="d-flex align-items-center gap-2">
+                    <span class="text-muted small">Total line:</span>
+                    <input type="number" id="totalLineInput"
+                           value="{{ sim.simulated_total_line or '' }}"
+                           step="0.5" min="1" max="30"
+                           class="form-control form-control-sm bg-black text-light border-secondary text-center"
+                           style="width:80px;"
+                           oninput="recalcTotals(this.value)"
+                           disabled
+                           title="Loading sim data…">
+                    <span id="totalLineHint" class="text-muted small fst-italic">Loading sim data…</span>
+                  </div>
+                </td>
+              </tr>
+              <tr id="fg-over-row" style="border-color:#222;">
+                <td class="ps-2 fw-bold text-light" id="fg-over-market">Over {{ sim.simulated_total_line or '—' }}</td>
+                <td class="fw-bold text-info" id="fg-over-sim">—</td>
+                <td id="fg-over-thr"><span class="text-muted small">loading…</span></td>
+                <td class="fw-bold text-warning" id="fg-over-kelly">—</td>
+                <td id="fg-over-book"><span class="text-muted fst-italic" style="font-size:0.75rem;">no odds entered</span></td>
+                <td class="pe-2" id="fg-over-action"><span class="text-muted" style="font-size:0.72rem;">Enter odds →</span></td>
+              </tr>
+              <tr id="fg-under-row" style="border-color:#222;">
+                <td class="ps-2 fw-bold text-light" id="fg-under-market">Under {{ sim.simulated_total_line or '—' }}</td>
+                <td class="fw-bold text-info" id="fg-under-sim">—</td>
+                <td id="fg-under-thr"><span class="text-muted small">loading…</span></td>
+                <td class="fw-bold text-warning" id="fg-under-kelly">—</td>
+                <td id="fg-under-book"><span class="text-muted fst-italic" style="font-size:0.75rem;">no odds entered</span></td>
+                <td class="pe-2" id="fg-under-action"><span class="text-muted" style="font-size:0.72rem;">Enter odds →</span></td>
+              </tr>
+              {% endif %}
+              </tbody>
+            </table>
+            </div>
+            {% endif %}
+            </div>
+
+            <!-- Score distribution chart -->
+            <div id="distChart" class="mt-3" style="height:150px;"></div>
+          </div>
+        </div>
+
+        <!-- ── FIRST 5 INNINGS TAB ───────────────────────────────────── -->
+        <div class="tab-pane fade" id="f5-pane" role="tabpanel">
+          <div class="px-3 pb-3">
+            {% if sim.f5_home_win_pct is not none %}
+
+            <!-- MONEYLINE -->
+            <div style="font-size:0.68rem; color:#666; text-transform:uppercase; letter-spacing:.08em; margin-bottom:8px;">Moneyline</div>
+            <div class="row g-2 mb-3">
+              {{ sc((away_team.abbreviation if away_team else 'Away') ~ ' F5', '%.1f'|format(sim.f5_away_win_pct * 100) ~ '%', '#28a745' if sim.f5_away_win_pct > sim.f5_home_win_pct else '#888') }}
+              {{ sc('Push (tie after 5)', '%.1f'|format(sim.f5_tie_pct * 100) ~ '%', '#888') }}
+              {{ sc((home_team.abbreviation if home_team else 'Home') ~ ' F5', '%.1f'|format(sim.f5_home_win_pct * 100) ~ '%', '#28a745' if sim.f5_home_win_pct > sim.f5_away_win_pct else '#888') }}
+              {{ sc('F5 avg total', '%.2f'|format(sim.f5_away_avg_runs + sim.f5_home_avg_runs), '#3b9eff') }}
+            </div>
+
+            <!-- RUN LINES + TOTALS -->
+            {% if sim.f5_over_pct is not none %}
+            <div style="font-size:0.68rem; color:#666; text-transform:uppercase; letter-spacing:.08em; margin-bottom:8px;">Totals &amp; run lines</div>
+            <div class="row g-2 mb-3">
+              {{ sc('F5 Over '  ~ sim.f5_simulated_total_line, '%.1f'|format(sim.f5_over_pct  * 100) ~ '%', '#f0c040' if sim.f5_over_pct  > 0.52 else '#f0f0f0') }}
+              {{ sc('F5 Under ' ~ sim.f5_simulated_total_line, '%.1f'|format(sim.f5_under_pct * 100) ~ '%', '#f0c040' if sim.f5_under_pct > 0.52 else '#f0f0f0') }}
+              {{ sc((away_team.abbreviation if away_team else 'Away') ~ ' -0.5', '%.1f'|format(sim.f5_away_cover_pct * 100) ~ '%', '#3b9eff' if sim.f5_away_cover_pct > 0.52 else '#f0f0f0') }}
+              {{ sc((home_team.abbreviation if home_team else 'Home') ~ ' -0.5', '%.1f'|format(sim.f5_home_cover_pct * 100) ~ '%', '#3b9eff' if sim.f5_home_cover_pct > 0.52 else '#f0f0f0') }}
+            </div>
+            {% else %}
+            <div class="alert alert-secondary mt-2 py-2 small text-center">
+              <i class="bi bi-info-circle"></i> Enter F5 odds (click "Enter Odds") to see O/U and run line probabilities.
+            </div>
+            {% endif %}
+
+            <!-- What to bet / Adjust edge buttons -->
+            {% set f5_signals = bet_signals | selectattr('mkt_type', 'equalto', 'f5') | list %}
+            <div class="d-flex justify-content-between align-items-center mt-1">
+              <button class="btn rounded-pill px-3 py-1" style="font-size:0.82rem; background:transparent; border:1px solid #3a3a3a; color:#ccc;"
+                      data-bs-toggle="collapse" data-bs-target="#f5WhatToBet">
+                What to bet &amp; at what price <i class="bi bi-arrow-up-right ms-1"></i>
+              </button>
+              <a href="/settings" class="btn rounded-pill px-3 py-1" style="font-size:0.82rem; background:transparent; border:1px solid #3a3a3a; color:#ccc;">
+                Adjust edge % <i class="bi bi-arrow-right ms-1"></i>
+              </a>
+            </div>
+
+            <!-- F5 What to Bet table (collapsible) -->
+            <div class="collapse mt-2" id="f5WhatToBet">
+            {% if f5_signals %}
+            <div class="table-responsive">
+            <table class="table table-dark table-sm mb-0" style="font-size:0.82rem; border-color:#222;">
+              <thead>
+                <tr style="font-size:0.70rem; color:#6c757d; border-bottom:1px solid #333;">
+                  <th class="ps-2 fw-normal">Market</th>
+                  <th class="fw-normal">Sim%</th>
+                  <th class="fw-normal">Look For</th>
+                  <th class="fw-normal">Kelly Bet</th>
+                  <th class="fw-normal">Book Offering</th>
+                  <th class="fw-normal pe-2">Action</th>
+                </tr>
+              </thead>
+              <tbody>
+              {% for s in f5_signals if 'ml' in s.side %}
+              <tr style="border-color:#222;">
+                <td class="ps-2 fw-bold text-light">{{ s.market }}</td>
+                <td class="fw-bold text-info">{{ "%.1f"|format(s.sim_pct * 100) }}%</td>
+                <td>
+                  <span class="fw-bold {% if s.threshold > 0 %}text-success{% else %}text-light{% endif %}">
+                    {{ '+' if s.threshold > 0 else '' }}{{ s.threshold }}
+                  </span>
+                  <span class="text-muted" style="font-size:0.75rem;"> or better</span>
+                </td>
+                <td class="fw-bold text-warning">${{ "%.0f"|format(s.kelly_at_thr) }}</td>
+                <td>
+                  {% if s.book_price is not none %}
+                    <span class="fw-bold {% if s.book_price > 0 %}text-success{% else %}text-light{% endif %}">
+                      {{ '+' if s.book_price > 0 else '' }}{{ s.book_price }}
+                    </span>
+                    {% if s.book_edge is not none %}
+                    <span class="text-muted" style="font-size:0.72rem;"> (+{{ "%.1f"|format(s.book_edge) }}%)</span>
+                    {% endif %}
+                  {% else %}
+                    <span class="text-muted fst-italic" style="font-size:0.75rem;">no odds entered</span>
+                  {% endif %}
+                </td>
+                <td class="pe-2">
+                  {% if s.book_price is not none %}
+                    {% if s.book_beats %}<span class="badge bg-success px-2 py-1"><i class="bi bi-check-circle-fill"></i> BET{% if s.book_kelly %} ${{ "%.0f"|format(s.book_kelly) }}{% endif %}</span>
+                    {% else %}<span class="badge bg-secondary px-2 py-1"><i class="bi bi-slash-circle"></i> PASS</span>{% endif %}
+                  {% else %}<span class="text-muted" style="font-size:0.72rem;">Enter odds →</span>{% endif %}
+                </td>
+              </tr>
+              {% endfor %}
+
+              {# ── F5 total line input ── #}
+              {% if sim.f5_home_win_pct is not none and sim.score_distribution %}
+              <tr style="border-color:#333; background:rgba(255,255,255,0.03);">
+                <td colspan="6" class="ps-2 py-2">
+                  <div class="d-flex align-items-center gap-2">
+                    <span class="text-muted small">F5 Total line:</span>
+                    <input type="number" id="f5TotalLineInput"
+                           value="{{ sim.f5_simulated_total_line or '' }}"
+                           step="0.5" min="0.5" max="20"
+                           class="form-control form-control-sm bg-black text-light border-secondary text-center"
+                           style="width:80px;"
+                           oninput="recalcF5Totals(this.value)"
+                           disabled
+                           title="Loading sim data…">
+                    <span id="f5TotalLineHint" class="text-muted small fst-italic">Loading sim data…</span>
+                  </div>
+                </td>
+              </tr>
+              <tr id="f5-over-row" style="border-color:#222;">
+                <td class="ps-2 fw-bold text-light" id="f5-over-market">F5 Over {{ sim.f5_simulated_total_line or '—' }}</td>
+                <td class="fw-bold text-info" id="f5-over-sim">—</td>
+                <td id="f5-over-thr"><span class="text-muted small">loading…</span></td>
+                <td class="fw-bold text-warning" id="f5-over-kelly">—</td>
+                <td id="f5-over-book"><span class="text-muted fst-italic" style="font-size:0.75rem;">no odds entered</span></td>
+                <td class="pe-2" id="f5-over-action"><span class="text-muted" style="font-size:0.72rem;">Enter odds →</span></td>
+              </tr>
+              <tr id="f5-under-row" style="border-color:#222;">
+                <td class="ps-2 fw-bold text-light" id="f5-under-market">F5 Under {{ sim.f5_simulated_total_line or '—' }}</td>
+                <td class="fw-bold text-info" id="f5-under-sim">—</td>
+                <td id="f5-under-thr"><span class="text-muted small">loading…</span></td>
+                <td class="fw-bold text-warning" id="f5-under-kelly">—</td>
+                <td id="f5-under-book"><span class="text-muted fst-italic" style="font-size:0.75rem;">no odds entered</span></td>
+                <td class="pe-2" id="f5-under-action"><span class="text-muted" style="font-size:0.72rem;">Enter odds →</span></td>
+              </tr>
+              {% endif %}
+              </tbody>
+            </table>
+            </div>
+            {% endif %}
+            </div><!-- /f5WhatToBet collapse -->
+
+            <!-- F5 score distribution chart -->
+            <div id="f5DistChart" class="mt-3" style="height:150px;"></div>
+
+            {% else %}
+            <div class="alert alert-secondary py-3 text-center">
+              <i class="bi bi-dice-3 me-2"></i>
+              Run a simulation to see First 5 Innings projections.
+            </div>
+            {% endif %}
+          </div>
+        </div>
+
+      </div><!-- /tab-content -->
+    </div>
+  </div>
+  {% else %}
+  <div class="col-12">
+    <div class="alert alert-secondary">
+      <i class="bi bi-info-circle"></i>
+      No simulation run yet. Enter both lineups and click "Run Simulation".
+    </div>
+  </div>
+  {% endif %}
+
+  <!-- Record Final Score -->
+  {% if game.status != 'final' %}
+  <div class="col-12">
+    <div class="card bg-black border-secondary">
+      <div class="card-header text-muted text-uppercase small d-flex justify-content-between align-items-center"
+           style="cursor:pointer;" data-bs-toggle="collapse" data-bs-target="#recordScoreBody">
+        <span><i class="bi bi-check2-circle"></i> Record Final Score</span>
+        <div class="d-flex gap-2">
+        {% if game.mlb_game_id %}
+        <button class="btn btn-outline-info btn-sm" onclick="event.stopPropagation(); fetchResult({{ game.id }}, this)">
+          <i class="bi bi-cloud-download"></i> Auto-Fetch from MLB
+        </button>
+        {% endif %}
+        <i class="bi bi-chevron-down text-muted"></i>
+        </div>
+      </div>
+      <div class="collapse" id="recordScoreBody">
+      <div class="card-body py-2">
+        <div id="fetchResultStatus" class="alert py-2 small mb-3 d-none"></div>
+        <form method="POST" action="{{ url_for('record_game_result', game_id=game.id) }}"
+              class="d-flex align-items-end gap-3">
+          <div>
+            <label class="form-label small text-info">
+              {{ away_team.abbreviation if away_team else 'Away' }} Score
+            </label>
+            <input type="number" name="away_score" min="0" max="30"
+                   class="form-control bg-dark text-light border-secondary"
+                   style="width:90px" placeholder="0" required>
+          </div>
+          <div>
+            <label class="form-label small text-warning">
+              {{ home_team.abbreviation if home_team else 'Home' }} Score
+            </label>
+            <input type="number" name="home_score" min="0" max="30"
+                   class="form-control bg-dark text-light border-secondary"
+                   style="width:90px" placeholder="0" required>
+          </div>
+          <button type="submit" class="btn btn-success">
+            <i class="bi bi-check-lg"></i> Save Score &amp; Grade Bets
+          </button>
+          <div class="text-muted small ms-2">
+            Saves the final score and auto-grades any recommendations you marked as placed.
+          </div>
+        </form>
+      </div>
+      </div>
+    </div>
+  </div>
+  {% endif %}
+
+  <!-- Bet Recommendations -->
+  {% if recommendations %}
+  {% set type_labels = {
+      'moneyline':    'ML',
+      'totals':       'Total',
+      'runline':      'RL',
+      'first_inning': '1st Inn',
+      'f5_moneyline': 'F5 ML',
+      'f5_totals':    'F5 Tot',
+      'f5_runline':   'F5 RL'
+  } %}
+  {% set side_labels = {
+      'home':      (home_team.abbreviation if home_team else 'Home'),
+      'away':      (away_team.abbreviation if away_team else 'Away'),
+      'over':      'Over',
+      'under':     'Under',
+      'rifi':      'RIFI ✓',
+      'nrfi':      'NRFI ✗',
+      'f5_home':   (home_team.abbreviation if home_team else 'Home') ~ ' F5',
+      'f5_away':   (away_team.abbreviation if away_team else 'Away') ~ ' F5',
+      'f5_over':   'F5 Over',
+      'f5_under':  'F5 Under',
+      'f5_home_rl':(home_team.abbreviation if home_team else 'Home') ~ ' -0.5',
+      'f5_away_rl':(away_team.abbreviation if away_team else 'Away') ~ ' -0.5'
+  } %}
+
+  {# Split bets into full-game vs F5 #}
+  {% set fg_bets = recommendations | selectattr('bet_type', 'in', ['moneyline','totals','runline','first_inning']) | list %}
+  {% set f5_bets = recommendations | selectattr('bet_type', 'in', ['f5_moneyline','f5_totals','f5_runline']) | list %}
+
+  <div class="col-12">
+    <div class="card bg-black border-warning">
+
+      <div class="card-header border-0 pb-0 d-flex justify-content-between align-items-center"
+           style="background:transparent;">
+        <span class="text-warning text-uppercase small fw-bold">
+          <i class="bi bi-lightning-charge-fill"></i> Bet Recommendations
+        </span>
+        <span class="text-muted fw-normal" style="font-size:0.72rem;">
+          Click <strong class="text-warning">BET</strong> to log a wager · P&amp;L auto-tracked when score is entered ·
+          <a href="/settings" class="text-secondary text-decoration-none">
+            <i class="bi bi-gear"></i> Adjust edge threshold
+          </a>
+        </span>
+      </div>
+
+      <!-- Market tabs -->
+      <div class="card-header border-0 pt-1 pb-0" style="background:transparent;">
+        <ul class="nav nav-tabs card-header-tabs" id="recTabs" role="tablist"
+            style="border-bottom-color:rgba(255,255,255,0.1);">
+          <li class="nav-item" role="presentation">
+            <button class="nav-link active text-light" id="rec-fg-tab"
+                    data-bs-toggle="tab" data-bs-target="#rec-fg-pane"
+                    type="button" role="tab"
+                    style="background:transparent; border-color:rgba(255,255,255,0.2) rgba(255,255,255,0.2) transparent;">
+              <i class="bi bi-9-circle"></i> Full Game
+              {% if fg_bets %}
+              <span class="badge bg-warning text-dark ms-1">{{ fg_bets | length }}</span>
+              {% endif %}
+            </button>
+          </li>
+          <li class="nav-item" role="presentation">
+            <button class="nav-link text-light" id="rec-f5-tab"
+                    data-bs-toggle="tab" data-bs-target="#rec-f5-pane"
+                    type="button" role="tab"
+                    style="background:transparent; border-color:transparent;">
+              <i class="bi bi-5-circle" style="color:#a78bfa;"></i>
+              <span style="color:#a78bfa;">First 5</span>
+              {% if f5_bets %}
+              <span class="badge ms-1 text-light" style="background:#6f42c1;">{{ f5_bets | length }}</span>
+              {% endif %}
+            </button>
+          </li>
+        </ul>
+      </div>
+
+      <div class="tab-content">
+
+        {# ── reusable macro for a single recommendation row ── #}
+        {# We define it inline via a Jinja set + call block workaround #}
+
+        <!-- FULL GAME TAB -->
+        <div class="tab-pane fade show active" id="rec-fg-pane" role="tabpanel">
+          {% if fg_bets %}
+          <div class="table-responsive">
+          <table class="table table-dark table-hover table-sm mb-0" style="font-size:0.82rem;">
+            <thead>
+              <tr class="text-muted" style="font-size:0.72rem; border-bottom:1px solid #333;">
+                <th class="ps-3">Market</th>
+                <th>Sim%</th>
+                <th>Bet At</th>
+                <th>Book Offering</th>
+                <th>Kelly Bet</th>
+                <th>Wagered</th>
+                <th>Result</th>
+                <th>P&amp;L</th>
+                <th class="pe-3"></th>
+              </tr>
+            </thead>
+            <tbody>
+            {% for bet in fg_bets %}
+            {% set is_bet = (bet.threshold_odds is none) or (bet.price >= bet.threshold_odds) %}
+            <tr id="bet-row-{{ bet.id }}"
+                class="{% if bet.won == true %}table-success{% elif bet.won == false %}table-danger{% endif %}">
+
+              <!-- Market label -->
+              <td class="ps-3 fw-bold">
+                {% if bet.bet_type == 'first_inning' %}
+                  <span class="badge bg-info text-dark me-1">1st</span>
+                {% else %}
+                  <span class="badge bg-secondary me-1">{{ type_labels.get(bet.bet_type, bet.bet_type) }}</span>
+                {% endif %}
+                {{ side_labels.get(bet.side, bet.side | upper) }}
+                <br><small class="text-muted fw-normal">{{ bet.bookmaker | replace('_us','') | replace('_',' ') | title }}</small>
+              </td>
+
+              <!-- Sim% -->
+              <td class="fw-bold text-info">{{ "%.1f"|format(bet.model_probability * 100) }}%</td>
+
+              <!-- Bet At threshold -->
+              <td>
+                {% if bet.threshold_odds is not none %}
+                  <span class="fw-bold {% if bet.threshold_odds > 0 %}text-success{% else %}text-light{% endif %}">
+                    {{ '+' if bet.threshold_odds > 0 else '' }}{{ bet.threshold_odds }}
+                  </span>
+                  <span class="text-muted small"> or better</span>
+                {% else %}
+                  <span class="text-muted small">—</span>
+                {% endif %}
+              </td>
+
+              <!-- Book Offering + edge indicator -->
+              <td>
+                <span class="fw-bold {% if bet.price > 0 %}text-success{% else %}text-light{% endif %}">
+                  {{ '+' if bet.price > 0 else '' }}{{ bet.price }}
+                </span>
+                <span class="badge ms-1
+                  {% if is_bet %}bg-success{% else %}bg-secondary{% endif %}"
+                  style="font-size:0.65rem;">
+                  {% if is_bet %}✓ VALUE{% else %}PASS{% endif %}
+                </span>
+                <br><small class="text-muted">+{{ "%.1f"|format(bet.edge_pct) }}% edge · EV +{{ "%.1f"|format(bet.ev_pct) }}%</small>
+              </td>
+
+              <!-- Kelly Bet -->
+              <td class="fw-bold text-warning">${{ "%.0f"|format(bet.recommended_bet or 0) }}</td>
+
+              <!-- Wagered -->
+              <td id="wagered-{{ bet.id }}">
+                {% if bet.placed and bet.actual_bet_size %}
+                  <span class="text-warning">${{ "%.0f"|format(bet.actual_bet_size) }}</span>
+                {% elif bet.placed %}
+                  <span class="text-warning">—</span>
+                {% else %}
+                  <span class="text-muted small">not placed</span>
+                {% endif %}
+              </td>
+
+              <!-- Result -->
+              <td>
+                {% if bet.won == true %}<span class="badge bg-success">WIN</span>
+                {% elif bet.won == false %}<span class="badge bg-danger">LOSS</span>
+                {% else %}<span class="badge bg-secondary">Pending</span>{% endif %}
+              </td>
+
+              <!-- P&L -->
+              <td class="fw-bold {% if bet.profit_loss and bet.profit_loss > 0 %}text-success{% elif bet.profit_loss and bet.profit_loss < 0 %}text-danger{% else %}text-muted{% endif %}"
+                  id="pl-{{ bet.id }}">
+                {% if bet.profit_loss is not none %}
+                  {{ '+' if bet.profit_loss > 0 else '' }}${{ "%.2f"|format(bet.profit_loss) }}
+                {% else %}—{% endif %}
+              </td>
+
+              <!-- Action -->
+              <td class="pe-3 text-center" id="action-{{ bet.id }}">
+                {% if bet.won is not none %}
+                  {# graded — no action #}
+                {% elif bet.placed %}
+                  <button class="btn btn-sm btn-outline-danger py-0 px-2"
+                          onclick="unplaceBet({{ bet.id }}, this)">
+                    <i class="bi bi-x-lg"></i> Undo
+                  </button>
+                {% else %}
+                  <button class="btn btn-sm fw-bold py-1 px-3
+                    {% if is_bet %}btn-success{% else %}btn-outline-secondary{% endif %}"
+                    onclick="openPlaceModal({{ bet.id }}, {{ bet.recommended_bet or 0 }},
+                      '{{ type_labels.get(bet.bet_type, bet.bet_type) }}',
+                      '{{ side_labels.get(bet.side, bet.side) }}',
+                      '{{ ('+' if bet.price > 0 else '') + (bet.price|string) }}')"
+                    title="{% if is_bet %}Model says BET — log your wager{% else %}Below threshold — consider passing{% endif %}">
+                    {% if is_bet %}
+                      <i class="bi bi-plus-circle-fill"></i> BET ${{ "%.0f"|format(bet.recommended_bet or 0) }}
+                    {% else %}
+                      <i class="bi bi-slash-circle"></i> PASS
+                    {% endif %}
+                  </button>
+                {% endif %}
+              </td>
+
+            </tr>
+            {% endfor %}
+            </tbody>
+          </table>
+          </div>
+          {% else %}
+          <div class="p-3 text-muted small text-center">No full-game recommendations yet — run a simulation with odds loaded.</div>
+          {% endif %}
+        </div>
+
+        <!-- F5 TAB -->
+        <div class="tab-pane fade" id="rec-f5-pane" role="tabpanel">
+          {% if f5_bets %}
+          <div class="table-responsive">
+          <table class="table table-dark table-hover table-sm mb-0" style="font-size:0.82rem;">
+            <thead>
+              <tr class="text-muted" style="font-size:0.72rem; border-bottom:1px solid #333;">
+                <th class="ps-3">Market</th>
+                <th>Sim%</th>
+                <th>Bet At</th>
+                <th>Book Offering</th>
+                <th>Kelly Bet</th>
+                <th>Wagered</th>
+                <th>Result</th>
+                <th>P&amp;L</th>
+                <th class="pe-3"></th>
+              </tr>
+            </thead>
+            <tbody>
+            {% for bet in f5_bets %}
+            {% set is_bet = (bet.threshold_odds is none) or (bet.price >= bet.threshold_odds) %}
+            <tr id="bet-row-{{ bet.id }}"
+                class="{% if bet.won == true %}table-success{% elif bet.won == false %}table-danger{% endif %}">
+
+              <td class="ps-3 fw-bold">
+                <span class="badge text-light me-1" style="background:#6f42c1;">
+                  {{ type_labels.get(bet.bet_type, bet.bet_type) }}
+                </span>
+                {{ side_labels.get(bet.side, bet.side | upper) }}
+                <br><small class="text-muted fw-normal">{{ bet.bookmaker | replace('_us','') | replace('_',' ') | title }}</small>
+              </td>
+
+              <td class="fw-bold text-info">{{ "%.1f"|format(bet.model_probability * 100) }}%</td>
+
+              <td>
+                {% if bet.threshold_odds is not none %}
+                  <span class="fw-bold {% if bet.threshold_odds > 0 %}text-success{% else %}text-light{% endif %}">
+                    {{ '+' if bet.threshold_odds > 0 else '' }}{{ bet.threshold_odds }}
+                  </span>
+                  <span class="text-muted small"> or better</span>
+                {% else %}
+                  <span class="text-muted small">—</span>
+                {% endif %}
+              </td>
+
+              <td>
+                <span class="fw-bold {% if bet.price > 0 %}text-success{% else %}text-light{% endif %}">
+                  {{ '+' if bet.price > 0 else '' }}{{ bet.price }}
+                </span>
+                <span class="badge ms-1
+                  {% if is_bet %}bg-success{% else %}bg-secondary{% endif %}"
+                  style="font-size:0.65rem;">
+                  {% if is_bet %}✓ VALUE{% else %}PASS{% endif %}
+                </span>
+                <br><small class="text-muted">+{{ "%.1f"|format(bet.edge_pct) }}% edge · EV +{{ "%.1f"|format(bet.ev_pct) }}%</small>
+              </td>
+
+              <td class="fw-bold text-warning">${{ "%.0f"|format(bet.recommended_bet or 0) }}</td>
+
+              <td id="wagered-{{ bet.id }}">
+                {% if bet.placed and bet.actual_bet_size %}
+                  <span class="text-warning">${{ "%.0f"|format(bet.actual_bet_size) }}</span>
+                {% elif bet.placed %}
+                  <span class="text-warning">—</span>
+                {% else %}
+                  <span class="text-muted small">not placed</span>
+                {% endif %}
+              </td>
+
+              <td>
+                {% if bet.won == true %}<span class="badge bg-success">WIN</span>
+                {% elif bet.won == false %}<span class="badge bg-danger">LOSS</span>
+                {% else %}<span class="badge bg-secondary">Pending</span>{% endif %}
+              </td>
+
+              <td class="fw-bold {% if bet.profit_loss and bet.profit_loss > 0 %}text-success{% elif bet.profit_loss and bet.profit_loss < 0 %}text-danger{% else %}text-muted{% endif %}"
+                  id="pl-{{ bet.id }}">
+                {% if bet.profit_loss is not none %}
+                  {{ '+' if bet.profit_loss > 0 else '' }}${{ "%.2f"|format(bet.profit_loss) }}
+                {% else %}—{% endif %}
+              </td>
+
+              <td class="pe-3 text-center" id="action-{{ bet.id }}">
+                {% if bet.won is not none %}
+                  {# graded #}
+                {% elif bet.placed %}
+                  <button class="btn btn-sm btn-outline-danger py-0 px-2"
+                          onclick="unplaceBet({{ bet.id }}, this)">
+                    <i class="bi bi-x-lg"></i> Undo
+                  </button>
+                {% else %}
+                  <button class="btn btn-sm fw-bold py-1 px-3
+                    {% if is_bet %}btn-success{% else %}btn-outline-secondary{% endif %}"
+                    onclick="openPlaceModal({{ bet.id }}, {{ bet.recommended_bet or 0 }},
+                      '{{ type_labels.get(bet.bet_type, bet.bet_type) }}',
+                      '{{ side_labels.get(bet.side, bet.side) }}',
+                      '{{ ('+' if bet.price > 0 else '') + (bet.price|string) }}')"
+                    title="{% if is_bet %}Model says BET — log your wager{% else %}Below threshold — consider passing{% endif %}">
+                    {% if is_bet %}
+                      <i class="bi bi-plus-circle-fill"></i> BET ${{ "%.0f"|format(bet.recommended_bet or 0) }}
+                    {% else %}
+                      <i class="bi bi-slash-circle"></i> PASS
+                    {% endif %}
+                  </button>
+                {% endif %}
+              </td>
+
+            </tr>
+            {% endfor %}
+            </tbody>
+          </table>
+          </div>
+          {% else %}
+          <div class="p-3 text-muted small text-center">No F5 recommendations — enter F5 odds under "Enter Odds" and re-simulate.</div>
+          {% endif %}
+        </div>
+
+      </div><!-- /tab-content -->
+    </div>
+  </div>
+
+  <!-- Place Bet Modal -->
+  <div class="modal fade" id="placeBetModal" tabindex="-1" aria-hidden="true">
+    <div class="modal-dialog modal-sm modal-dialog-centered">
+      <div class="modal-content bg-dark border-warning">
+        <div class="modal-header border-secondary py-2">
+          <h6 class="modal-title text-warning mb-0">
+            <i class="bi bi-plus-circle-fill"></i> Log Bet
+          </h6>
+          <button type="button" class="btn-close btn-close-white btn-sm" data-bs-dismiss="modal"></button>
+        </div>
+        <div class="modal-body py-3">
+          <div class="text-center mb-3">
+            <span id="modal-bet-desc" class="badge bg-secondary fs-6 px-3 py-2"></span>
+          </div>
+          <label class="form-label small text-muted">Amount to wager ($)</label>
+          <div class="input-group">
+            <span class="input-group-text bg-black text-muted border-secondary">$</span>
+            <input type="number" id="modal-bet-amount" class="form-control bg-black text-light border-secondary"
+                   min="1" step="1" placeholder="0">
+          </div>
+          <div class="text-muted mt-2" style="font-size:0.75rem;">
+            Kelly suggested: <span id="modal-kelly-amt" class="text-warning fw-bold"></span>
+          </div>
+        </div>
+        <div class="modal-footer border-secondary py-2">
+          <button type="button" class="btn btn-secondary btn-sm" data-bs-dismiss="modal">Cancel</button>
+          <button type="button" class="btn btn-warning btn-sm text-dark fw-bold" onclick="confirmPlaceBet()">
+            <i class="bi bi-check-lg"></i> Confirm Bet
+          </button>
+        </div>
+      </div>
+    </div>
+  </div>
+  {% endif %}
+
+  <!-- Odds — collapsed by default -->
+  {% if odds %}
+  <div class="col-12">
+    <div class="card bg-black border-secondary">
+      <div class="card-header text-muted text-uppercase small d-flex justify-content-between align-items-center"
+           style="cursor:pointer;" data-bs-toggle="collapse" data-bs-target="#liveOddsBody" aria-expanded="false">
+        <span><i class="bi bi-bar-chart-line me-1"></i>Live Odds <span class="badge bg-secondary ms-1" style="font-size:0.65rem;">{{ odds | length }}</span></span>
+        <div class="d-flex align-items-center gap-2">
+          {% if odds_stale %}
+          <span class="badge bg-warning text-dark" title="Odds fetched {{ odds_age_str }} — consider refreshing">
+            <i class="bi bi-clock"></i> {{ odds_age_str }}
+          </span>
+          {% endif %}
+          <i class="bi bi-chevron-down text-muted" style="font-size:0.8rem;"></i>
+        </div>
+      </div>
+      <div class="collapse" id="liveOddsBody">
+        <div class="card-body p-0">
+          <table class="table table-dark table-sm mb-0">
+            <thead><tr><th>Book</th><th>Market</th><th>Away</th><th>Home</th><th>Total</th><th>Over</th><th>Under</th></tr></thead>
+            <tbody>
+              {% for o in odds | sort(attribute='bookmaker') %}
+              <tr>
+                <td>{{ o.bookmaker }}</td>
+                <td><span class="badge bg-secondary">{{ o.market }}</span></td>
+                <td class="{% if o.away_price and o.away_price > 0 %}text-success{% else %}text-warning{% endif %}">
+                  {{ ('+' if o.away_price > 0 else '') + o.away_price|string if o.away_price else '—' }}
+                </td>
+                <td class="{% if o.home_price and o.home_price > 0 %}text-success{% else %}text-warning{% endif %}">
+                  {{ ('+' if o.home_price > 0 else '') + o.home_price|string if o.home_price else '—' }}
+                </td>
+                <td>{{ o.total_line or '—' }}</td>
+                <td>{{ ('+' if o.over_price > 0 else '') + o.over_price|string if o.over_price else '—' }}</td>
+                <td>{{ ('+' if o.under_price > 0 else '') + o.under_price|string if o.under_price else '—' }}</td>
+              </tr>
+              {% endfor %}
+            </tbody>
+          </table>
+        </div>
+      </div>
+    </div>
+  </div>
+  {% endif %}
+
+  <!-- ── Lineup section: view + inline editor ──────────────────────────── -->
+  <div class="col-12">
+
+    <!-- View mode: compact side-by-side tables -->
+    <!-- Macro: renders one lineup card (used for both away and home) -->
+    {# ------------------------------------------------------------------ #}
+    {# Shared macro so we don't duplicate 80 lines of HTML for each team  #}
+    {# ------------------------------------------------------------------ #}
+    {% macro lineup_card(label, team, lineup, starter, opp_starter, ls) %}
+    {% set opp_throws = (opp_starter.throws or 'R') if opp_starter else 'R' %}
+    <div class="card bg-black border-secondary h-100">
+
+      {# ── Card header ─────────────────────────────────────────────────── #}
+      <div class="card-header pb-1">
+        {# Row 1: team label + SP #}
+        <div class="d-flex justify-content-between align-items-center">
+          <span class="text-muted text-uppercase small">
+            {{ label }} — <span class="text-light fw-semibold">{{ team.name if team else label }}</span>
+          </span>
+          <small class="text-muted fw-normal">
+            SP:
+            {% if starter %}
+              <span class="text-light">{{ starter.name }}</span>
+              {% if starter.throws %}
+              <span class="badge ms-1 {% if starter.throws == 'L' %}bg-info text-dark{% else %}bg-secondary{% endif %}" style="font-size:0.65rem;">
+                {{ starter.throws }}HP
+              </span>
+              {% endif %}
+            {% else %}
+              <span class="fst-italic">TBD</span>
+            {% endif %}
+          </small>
+        </div>
+        {# Row 2: lineup quality badges #}
+        <div class="d-flex gap-2 mt-1 flex-wrap">
+          {% if ls.avg_wrc is not none %}
+            {% if ls.avg_wrc >= 115 %}{% set lq_cls = 'bg-success' %}
+            {% elif ls.avg_wrc >= 100 %}{% set lq_cls = 'bg-success bg-opacity-50' %}
+            {% elif ls.avg_wrc >= 85 %}{% set lq_cls = 'bg-secondary' %}
+            {% else %}{% set lq_cls = 'bg-danger bg-opacity-75' %}
+            {% endif %}
+            <span class="badge {{ lq_cls }}" style="font-size:0.68rem;"
+                  title="Average wRC+ across lineup (100 = league average)">
+              Lineup wRC+ {{ ls.avg_wrc }}
+            </span>
+          {% endif %}
+          {% if lineup %}
+            {% set platoon_pct = (ls.platoon_count / ls.total * 100) | int %}
+            <span class="badge {% if ls.platoon_count >= 6 %}bg-success{% elif ls.platoon_count >= 4 %}bg-warning text-dark{% else %}bg-secondary{% endif %}"
+                  style="font-size:0.68rem;"
+                  title="Batters with handedness advantage vs opposing starter ({{ opp_throws }}HP)">
+              {{ ls.platoon_count }}/{{ ls.total }} Platoon Edge vs {{ opp_throws }}HP
+            </span>
+            {% if ls.hot_count > 0 %}
+            <span class="badge bg-warning text-dark" style="font-size:0.68rem;"
+                  title="Batters whose last-15-day wRC+ is 15+ points above their season average">
+              🔥 {{ ls.hot_count }} Hot
+            </span>
+            {% endif %}
+          {% endif %}
+        </div>
+      </div>
+
+      {# ── Lineup table ────────────────────────────────────────────────── #}
+      <div class="card-body p-0">
+        <table class="table table-dark table-sm mb-0" style="font-size:0.82rem;">
+          <thead>
+            <tr class="text-muted" style="font-size:0.72rem;">
+              <th width="24">#</th>
+              <th>Player</th>
+              <th width="30" class="text-center" title="Bats (L/R/Switch)">Bat</th>
+              <th width="32" class="text-center">Pos</th>
+            </tr>
+          </thead>
+          <tbody>
+            {% for slot in lineup %}
+              {% set player = slot.player %}
+              {% set st     = player_stats_map.get(player.id) if player else none %}
+
+              {# Platoon advantage for this batter? #}
+              {% set bats = player.bats if player else '' %}
+              {% set has_platoon = bats == 'S'
+                  or (opp_throws == 'R' and bats == 'L')
+                  or (opp_throws == 'L' and bats == 'R') %}
+
+              {# Order group: top (1-3), middle (4-6), bottom (7-9) #}
+              {% if slot.batting_order <= 3 %}{% set row_border = 'border-start border-success border-2' %}
+              {% elif slot.batting_order <= 6 %}{% set row_border = 'border-start border-secondary border-1' %}
+              {% else %}{% set row_border = '' %}
+              {% endif %}
+
+              <tr class="{{ row_border }} {% if has_platoon and player %}table-active bg-opacity-10{% endif %}"
+                  style="{% if has_platoon and player %}background:rgba(13,202,240,0.05);{% endif %}">
+
+                {# Batting order number #}
+                <td class="text-muted ps-2">{{ slot.batting_order }}</td>
+
+                {# Player name + wRC+ badge + trend #}
+                <td>
+                  {% if player %}
+                    {{ player.name }}
+                    {% if st %}
+                      {% set disp_wrc = display_wrc_map.get(player.id) %}
+                      {% if disp_wrc is not none %}
+                        {# Size / color of wRC+ badge — uses blended display value #}
+                        {% if disp_wrc >= 140 %}{% set bc = 'bg-success' %}
+                        {% elif disp_wrc >= 115 %}{% set bc = 'bg-success bg-opacity-75' %}
+                        {% elif disp_wrc >= 95  %}{% set bc = 'bg-secondary' %}
+                        {% elif disp_wrc >= 75  %}{% set bc = 'bg-warning text-dark' %}
+                        {% else %}{% set bc = 'bg-danger' %}
+                        {% endif %}
+                        {% set raw_pa = st.pa or 0 %}
+                        {% set wrc_title = 'wRC+ ' ~ disp_wrc ~ ' — 100 is league average.' %}
+                        {% if raw_pa < 150 %}{% set wrc_title = wrc_title ~ ' (blended with prior season — only ' ~ raw_pa ~ ' PA in ' ~ st.season ~ ')' %}{% endif %}
+                        <span class="badge {{ bc }} ms-1"
+                              style="font-size:0.68rem;"
+                              title="{{ wrc_title }}">{{ disp_wrc }}</span>
+                        {# Recent form trend (last 15 days vs season) #}
+                        {% if st.wrc_plus_last_15 is not none and st.wrc_plus is not none %}
+                          {% set trend = st.wrc_plus_last_15 - st.wrc_plus %}
+                          {% if trend >= 15 %}
+                            <span class="text-success" style="font-size:0.7rem;"
+                                  title="Last 15 days: wRC+ {{ st.wrc_plus_last_15 }} (+{{ trend }} vs season)">▲</span>
+                          {% elif trend <= -15 %}
+                            <span class="text-danger" style="font-size:0.7rem;"
+                                  title="Last 15 days: wRC+ {{ st.wrc_plus_last_15 }} ({{ trend }} vs season)">▼</span>
+                          {% endif %}
+                        {% endif %}
+                      {% elif st.ops is not none %}
+                        <span class="badge bg-secondary ms-1" style="font-size:0.68rem;"
+                              title="OPS (wRC+ not available)">.{{ (st.ops * 1000) | int }}</span>
+                      {% else %}
+                        <span class="badge border border-secondary text-secondary ms-1"
+                              style="font-size:0.65rem;"
+                              title="No stats — re-export FanGraphs CSVs and run import_data.py">?</span>
+                      {% endif %}
+                    {% else %}
+                      <span class="badge border border-secondary text-secondary ms-1"
+                            style="font-size:0.65rem;"
+                            title="No stats — re-export FanGraphs CSVs and run import_data.py">?</span>
+                    {% endif %}
+                  {% else %}
+                    <span class="text-muted fst-italic">—</span>
+                  {% endif %}
+                </td>
+
+                {# Bats (handedness) #}
+                <td class="text-center">
+                  {% if player and player.bats %}
+                    {% if player.bats == 'L' %}
+                      <span class="badge bg-info bg-opacity-25 text-info"
+                            style="font-size:0.65rem;"
+                            title="Left-handed batter{% if has_platoon %} ✅ Platoon advantage{% endif %}">L</span>
+                    {% elif player.bats == 'R' %}
+                      <span class="badge bg-secondary bg-opacity-50 text-light"
+                            style="font-size:0.65rem;"
+                            title="Right-handed batter{% if has_platoon %} ✅ Platoon advantage{% endif %}">R</span>
+                    {% elif player.bats == 'S' %}
+                      <span class="badge bg-warning bg-opacity-50 text-dark"
+                            style="font-size:0.65rem;"
+                            title="Switch hitter — always has platoon advantage">S</span>
+                    {% endif %}
+                  {% else %}
+                    <span class="text-muted">—</span>
+                  {% endif %}
+                </td>
+
+                {# Position #}
+                <td class="text-center">
+                  <small class="text-muted">{{ player.position if player else '' }}</small>
+                </td>
+
+              </tr>
+            {% endfor %}
+            {% if not lineup %}
+            <tr>
+              <td colspan="4" class="text-muted text-center fst-italic py-3">
+                No lineup entered — click Edit Lineup above
+              </td>
+            </tr>
+            {% endif %}
+          </tbody>
+        </table>
+      </div>
+
+    </div>
+    {% endmacro %}
+
+    <div class="row g-3 mb-2" id="lineupView">
+      <div class="col-md-6">
+        {{ lineup_card('Away', away_team, away_lineup, game.away_starter, game.home_starter, away_lineup_stats) }}
+      </div>
+      <div class="col-md-6">
+        {{ lineup_card('Home', home_team, home_lineup, game.home_starter, game.away_starter, home_lineup_stats) }}
+      </div>
+    </div>
+
+    <!-- Manual Odds Entry (collapse) -->
+    <div class="collapse" id="manualOddsEditor">
+      <div class="card bg-black border-warning mt-2">
+        <div class="card-header text-warning text-uppercase small d-flex justify-content-between align-items-center">
+          <span><i class="bi bi-pencil"></i> Enter / Edit Odds Manually</span>
+          <small class="text-muted fw-normal" style="text-transform:none;">
+            Use for spring training, offshore books, or any lines not in The Odds API
+          </small>
+        </div>
+        <div class="card-body">
+          <form method="POST" action="{{ url_for('manual_odds', game_id=game.id) }}">
+
+            <div class="row g-3 align-items-end">
+
+              <!-- Bookmaker -->
+              <div class="col-md-2">
+                <label class="form-label small text-muted">Bookmaker</label>
+                <input type="text" name="bookmaker" list="bookmakerList"
+                       class="form-control bg-dark text-light border-secondary form-control-sm"
+                       placeholder="Manual"
+                       value="{{ h2h_odds.bookmaker if h2h_odds and h2h_odds.bookmaker != 'Manual' else (totals_odds.bookmaker if totals_odds and totals_odds.bookmaker != 'Manual' else '') }}">
+                <datalist id="bookmakerList">
+                  <option value="Manual">
+                  <option value="DraftKings">
+                  <option value="FanDuel">
+                  <option value="BetMGM">
+                  <option value="Caesars">
+                  <option value="Bet365">
+                  <option value="BetRivers">
+                  <option value="Pinnacle">
+                  <option value="Bovada">
+                  <option value="Station">
+                  <option value="South Point">
+                  <option value="Westgate">
+                </datalist>
+              </div>
+
+              <!-- Moneyline -->
+              <div class="col-md-1">
+                <label class="form-label small text-info">
+                  {{ away_team.abbreviation if away_team else 'Away' }} ML
+                </label>
+                <input type="number" name="away_ml"
+                       class="form-control bg-dark text-light border-secondary form-control-sm"
+                       placeholder="-110"
+                       value="{{ h2h_odds.away_price if h2h_odds and h2h_odds.away_price else '' }}">
+              </div>
+              <div class="col-md-1">
+                <label class="form-label small text-warning">
+                  {{ home_team.abbreviation if home_team else 'Home' }} ML
+                </label>
+                <input type="number" name="home_ml"
+                       class="form-control bg-dark text-light border-secondary form-control-sm"
+                       placeholder="-110"
+                       value="{{ h2h_odds.home_price if h2h_odds and h2h_odds.home_price else '' }}">
+              </div>
+
+              <!-- Divider -->
+              <div class="col-md-1 text-center text-muted align-self-center pt-4">
+                <i class="bi bi-slash-lg" style="font-size:1.5rem;"></i>
+              </div>
+
+              <!-- Totals -->
+              <div class="col-md-1">
+                <label class="form-label small text-muted">O/U Line</label>
+                <input type="number" name="total_line" step="0.5"
+                       class="form-control bg-dark text-light border-secondary form-control-sm"
+                       placeholder="8.5"
+                       value="{{ totals_odds.total_line if totals_odds and totals_odds.total_line else '' }}">
+              </div>
+              <div class="col-md-1">
+                <label class="form-label small text-muted">Over</label>
+                <input type="number" name="over_odds"
+                       class="form-control bg-dark text-light border-secondary form-control-sm"
+                       placeholder="-110"
+                       value="{{ totals_odds.over_price if totals_odds and totals_odds.over_price else '' }}">
+              </div>
+              <div class="col-md-1">
+                <label class="form-label small text-muted">Under</label>
+                <input type="number" name="under_odds"
+                       class="form-control bg-dark text-light border-secondary form-control-sm"
+                       placeholder="-110"
+                       value="{{ totals_odds.under_price if totals_odds and totals_odds.under_price else '' }}">
+              </div>
+
+              <!-- Divider -->
+              <div class="col-md-1 text-center text-muted align-self-center pt-4">
+                <i class="bi bi-slash-lg" style="font-size:1.5rem;"></i>
+              </div>
+
+              <!-- Run Line -->
+              <div class="col-md-1">
+                <label class="form-label small text-info">
+                  {{ away_team.abbreviation if away_team else 'Away' }} RL {{ away_rl_line }}
+                </label>
+                <input type="number" name="away_rl"
+                       class="form-control bg-dark text-light border-secondary form-control-sm"
+                       placeholder="-165"
+                       value="{{ spreads_odds.away_price if spreads_odds and spreads_odds.away_price else '' }}">
+              </div>
+              <div class="col-md-1">
+                <label class="form-label small text-warning">
+                  {{ home_team.abbreviation if home_team else 'Home' }} RL {{ home_rl_line }}
+                </label>
+                <input type="number" name="home_rl"
+                       class="form-control bg-dark text-light border-secondary form-control-sm"
+                       placeholder="+145"
+                       value="{{ spreads_odds.home_price if spreads_odds and spreads_odds.home_price else '' }}">
+              </div>
+
+              <!-- Save -->
+              <div class="col-md-1 d-flex align-items-end">
+                <button type="submit" class="btn btn-warning btn-sm w-100">
+                  <i class="bi bi-save"></i> Save
+                </button>
+              </div>
+
+            </div><!-- /row -->
+
+            <!-- First Inning row -->
+            {% set fi_odds = odds | selectattr('market','equalto','first_inning') | list | first | default(none) %}
+            <div class="row g-2 mt-1 align-items-end">
+              <div class="col-12">
+                <div class="text-muted" style="font-size:0.72rem; text-transform:uppercase; letter-spacing:.05em;">
+                  <i class="bi bi-1-circle"></i> First Inning
+                </div>
+              </div>
+              <div class="col-md-2">
+                <label class="form-label small text-success">RIFI (Run in 1st) — Yes</label>
+                <input type="number" name="rifi_odds"
+                       class="form-control bg-dark text-light border-secondary form-control-sm"
+                       placeholder="-130"
+                       value="{{ fi_odds.over_price if fi_odds and fi_odds.over_price else '' }}">
+              </div>
+              <div class="col-md-2">
+                <label class="form-label small text-danger">NRFI (No Run in 1st) — No</label>
+                <input type="number" name="nrfi_odds"
+                       class="form-control bg-dark text-light border-secondary form-control-sm"
+                       placeholder="+108"
+                       value="{{ fi_odds.under_price if fi_odds and fi_odds.under_price else '' }}">
+              </div>
+              <div class="col-md-1 d-flex align-items-end">
+                <button type="submit" class="btn btn-warning btn-sm w-100">
+                  <i class="bi bi-save"></i> Save
+                </button>
+              </div>
+            </div>
+
+            <!-- First 5 Innings row -->
+            {% set f5_ml_odds  = odds | selectattr('market','equalto','f5_moneyline') | list | first | default(none) %}
+            {% set f5_tot_odds = odds | selectattr('market','equalto','f5_totals')    | list | first | default(none) %}
+            {% set f5_rl_odds  = odds | selectattr('market','equalto','f5_runline')   | list | first | default(none) %}
+            <div class="row g-2 mt-1 align-items-end">
+              <div class="col-12">
+                <div class="text-muted" style="font-size:0.72rem; text-transform:uppercase; letter-spacing:.05em;">
+                  <i class="bi bi-5-circle"></i> First 5 Innings (F5)
+                </div>
+              </div>
+              <div class="col-md-1">
+                <label class="form-label small text-info">{{ away_team.abbreviation if away_team else 'Away' }} ML</label>
+                <input type="number" name="f5_away_ml"
+                       class="form-control bg-dark text-light border-secondary form-control-sm"
+                       placeholder="+120"
+                       value="{{ f5_ml_odds.away_price if f5_ml_odds and f5_ml_odds.away_price else '' }}">
+              </div>
+              <div class="col-md-1">
+                <label class="form-label small text-warning">{{ home_team.abbreviation if home_team else 'Home' }} ML</label>
+                <input type="number" name="f5_home_ml"
+                       class="form-control bg-dark text-light border-secondary form-control-sm"
+                       placeholder="-140"
+                       value="{{ f5_ml_odds.home_price if f5_ml_odds and f5_ml_odds.home_price else '' }}">
+              </div>
+              <div class="col-md-1">
+                <label class="form-label small text-muted">F5 O/U Line</label>
+                <input type="number" name="f5_total_line" step="0.5"
+                       class="form-control bg-dark text-light border-secondary form-control-sm"
+                       placeholder="4.5"
+                       value="{{ f5_tot_odds.total_line if f5_tot_odds and f5_tot_odds.total_line else '' }}">
+              </div>
+              <div class="col-md-1">
+                <label class="form-label small text-muted">F5 Over</label>
+                <input type="number" name="f5_over_odds"
+                       class="form-control bg-dark text-light border-secondary form-control-sm"
+                       placeholder="-110"
+                       value="{{ f5_tot_odds.over_price if f5_tot_odds and f5_tot_odds.over_price else '' }}">
+              </div>
+              <div class="col-md-1">
+                <label class="form-label small text-muted">F5 Under</label>
+                <input type="number" name="f5_under_odds"
+                       class="form-control bg-dark text-light border-secondary form-control-sm"
+                       placeholder="-110"
+                       value="{{ f5_tot_odds.under_price if f5_tot_odds and f5_tot_odds.under_price else '' }}">
+              </div>
+              <div class="col-md-1">
+                <label class="form-label small text-info">{{ away_team.abbreviation if away_team else 'Away' }} -0.5</label>
+                <input type="number" name="f5_away_rl"
+                       class="form-control bg-dark text-light border-secondary form-control-sm"
+                       placeholder="-105"
+                       value="{{ f5_rl_odds.away_price if f5_rl_odds and f5_rl_odds.away_price else '' }}">
+              </div>
+              <div class="col-md-1">
+                <label class="form-label small text-warning">{{ home_team.abbreviation if home_team else 'Home' }} -0.5</label>
+                <input type="number" name="f5_home_rl"
+                       class="form-control bg-dark text-light border-secondary form-control-sm"
+                       placeholder="-105"
+                       value="{{ f5_rl_odds.home_price if f5_rl_odds and f5_rl_odds.home_price else '' }}">
+              </div>
+              <div class="col-md-1 d-flex align-items-end">
+                <button type="submit" class="btn btn-warning btn-sm w-100">
+                  <i class="bi bi-save"></i> Save
+                </button>
+              </div>
+            </div>
+
+            <div class="mt-2 text-muted" style="font-size:0.75rem;">
+              <i class="bi bi-info-circle"></i>
+              Enter American odds (e.g. <strong>-150</strong> or <strong>+130</strong>).
+              Leave any field blank to skip that market.
+              Saving will overwrite existing odds for the chosen bookmaker.
+            </div>
+          </form>
+        </div>
+      </div>
+    </div><!-- /#manualOddsEditor -->
+
+    <!-- Inline editor (collapse) — auto-open when no lineup exists -->
+    {% if game.status != 'final' %}
+    <div class="collapse {% if not home_lineup and not away_lineup %}show{% endif %}" id="lineupEditor">
+      <div class="card bg-black border-info mt-1">
+        <div class="card-header text-info text-uppercase small d-flex justify-content-between align-items-center">
+          <span><i class="bi bi-pencil-square"></i> Edit Lineup &amp; Game Details</span>
+          <button type="button" class="btn btn-sm btn-outline-info" id="fetchLineupBtn"
+                  onclick="fetchLineupFromMLB()" {% if not game.mlb_game_id %}disabled title="No MLB game ID"{% endif %}>
+            <i class="bi bi-cloud-download"></i> Auto-Fill from MLB
+          </button>
+          <button type="button" class="btn btn-sm btn-outline-info" onclick="fetchWeather()" id="weatherBtn">
+            <i class="bi bi-cloud-sun"></i> Fetch Weather
+          </button>
+        </div>
+        <div class="card-body">
+          <div id="fetchLineupStatus" class="alert py-2 small mb-3 d-none"></div>
+          <div id="weatherStatus" class="alert alert-info py-2 small mb-3 d-none"></div>
+
+          <form method="POST" action="{{ url_for('edit_lineup', game_id=game.id) }}">
+
+            <!-- Starters, Weather & Umpire row -->
+            <div class="row g-2 mb-3 align-items-end">
+
+              <div class="col-md-2">
+                <label class="form-label small text-info">Away SP — {{ away_team.abbreviation if away_team else '' }}</label>
+                <select name="away_starter_id" class="form-select form-select-sm bg-dark text-light border-secondary">
+                  <option value="">-- TBD --</option>
+                  {% for p in away_pitchers %}
+                  <option value="{{ p.id }}" {% if game.away_starter_id == p.id %}selected{% endif %}>{{ p.name | last_first }}</option>
+                  {% endfor %}
+                </select>
+              </div>
+
+              <div class="col-md-2">
+                <label class="form-label small text-warning">Home SP — {{ home_team.abbreviation if home_team else '' }}</label>
+                <select name="home_starter_id" class="form-select form-select-sm bg-dark text-light border-secondary">
+                  <option value="">-- TBD --</option>
+                  {% for p in home_pitchers %}
+                  <option value="{{ p.id }}" {% if game.home_starter_id == p.id %}selected{% endif %}>{{ p.name | last_first }}</option>
+                  {% endfor %}
+                </select>
+              </div>
+
+              <div class="col-md-1">
+                <label class="form-label small">Temp °F</label>
+                <input type="number" id="temperature_f" name="temperature_f"
+                       class="form-control form-control-sm bg-dark text-light border-secondary"
+                       placeholder="72" min="30" max="110"
+                       value="{{ game.temperature_f | int if game.temperature_f else '' }}">
+              </div>
+              <div class="col-md-1">
+                <label class="form-label small">Wind mph</label>
+                <input type="number" id="wind_speed_mph" name="wind_speed_mph"
+                       class="form-control form-control-sm bg-dark text-light border-secondary"
+                       placeholder="0" min="0" max="40"
+                       value="{{ game.wind_speed_mph | int if game.wind_speed_mph else '' }}">
+              </div>
+              <div class="col-md-2">
+                <label class="form-label small">Wind Direction</label>
+                <select id="wind_direction" name="wind_direction"
+                        class="form-select form-select-sm bg-dark text-light border-secondary">
+                  <option value="">-- Select --</option>
+                  {% for d in ['Out to CF','Out to LF','Out to RF','In from CF','In from LF','In from RF','Calm / Variable'] %}
+                  <option {% if game.wind_direction == d %}selected{% endif %}>{{ d }}</option>
+                  {% endfor %}
+                </select>
+                <div id="windHint" class="text-muted" style="font-size:0.7rem;display:none;">
+                  Wind from <span id="windFrom"></span>
+                </div>
+              </div>
+              <div class="col-md-1">
+                <label class="form-label small">Humidity %</label>
+                <input type="number" id="humidity_pct" name="humidity_pct"
+                       class="form-control form-control-sm bg-dark text-light border-secondary"
+                       placeholder="50" min="0" max="100"
+                       value="{{ game.humidity_pct | int if game.humidity_pct else '' }}">
+              </div>
+              <div class="col-md-1">
+                <label class="form-label small">Pressure</label>
+                <input type="number" id="pressure_inhg" name="pressure_inhg"
+                       class="form-control form-control-sm bg-dark text-light border-secondary"
+                       placeholder="29.92" step="0.01"
+                       value="{{ '%.2f'|format(game.pressure_inhg) if game.pressure_inhg else '' }}">
+              </div>
+              <div class="col-md-2">
+                <label class="form-label small"><i class="bi bi-person-badge"></i> HP Umpire</label>
+                <select name="umpire_id" class="form-select form-select-sm bg-dark text-light border-secondary">
+                  <option value="">-- Not Assigned --</option>
+                  {% for u in all_umpires %}
+                  <option value="{{ u.id }}" {% if game.umpire_id == u.id %}selected{% endif %}>{{ u.name }}</option>
+                  {% endfor %}
+                </select>
+              </div>
+
+            </div>
+
+            <!-- Hidden inputs — batting order (populated by drag-and-drop JS) -->
+            {% for i in range(1, 10) %}
+            <input type="hidden" name="away_batter_{{ i }}" id="awayBatter{{ i }}"
+                   value="{{ away_lineup_dict.get(i, '') }}">
+            <input type="hidden" name="home_batter_{{ i }}" id="homeBatter{{ i }}"
+                   value="{{ home_lineup_dict.get(i, '') }}">
+            {% endfor %}
+
+            <!-- Hidden inputs — bullpen selections (populated by drag-and-drop JS) -->
+            {% for i in range(1, 6) %}
+            <input type="hidden" name="away_reliever_{{ i }}" id="awayReliever{{ i }}"
+                   value="{{ away_bullpen_dict.get(i + 9, '') }}">
+            <input type="hidden" name="home_reliever_{{ i }}" id="homeReliever{{ i }}"
+                   value="{{ home_bullpen_dict.get(i + 9, '') }}">
+            {% endfor %}
+
+            <!-- Batting orders — drag & drop -->
+            <div class="row g-3 mt-1">
+
+              <!-- ── AWAY ── -->
+              <div class="col-md-6">
+                <div class="fw-semibold text-info small mb-2 text-uppercase">
+                  <i class="bi bi-grip-vertical"></i>
+                  Away Batting Order — {{ away_team.name if away_team else 'Away' }}
+                </div>
+                <div class="row g-2">
+
+                  <!-- Away pool -->
+                  <div class="col-5">
+                    <div class="text-muted" style="font-size:0.70rem;">Available</div>
+                    <div id="awayPool"
+                         class="lineup-pool border border-secondary rounded p-1"
+                         ondragover="allowDrop(event)"
+                         ondrop="dropToPool(event,'away')">
+                      {% for p in away_batters %}
+                      {% if p.id not in away_lineup_dict.values() %}
+                      {% set ps = player_stats_map.get(p.id) %}
+                      <div class="player-chip"
+                           draggable="true"
+                           data-pid="{{ p.id }}"
+                           data-label="{{ p.name | last_first }} ({{ p.position or '?' }})"
+                           data-wrc="{{ ps.wrc_plus if ps and ps.wrc_plus is not none else '' }}"
+                           ondragstart="dragStart(event,'away')">
+                        {{ p.name | last_first }}<span class="pos-badge">{{ p.position or '?' }}</span>{% if ps and ps.wrc_plus is not none %}<span class="wrc-badge">{{ ps.wrc_plus }}</span>{% endif %}
+                      </div>
+                      {% endif %}
+                      {% endfor %}
+                    </div>
+                  </div>
+
+                  <!-- Away order slots -->
+                  <div class="col-7">
+                    <div class="text-muted" style="font-size:0.70rem;">Batting Order</div>
+                    {% for i in range(1, 10) %}
+                    {% set pid = away_lineup_dict.get(i) %}
+                    <div class="lineup-slot"
+                         data-side="away" data-order="{{ i }}"
+                         ondragover="allowDrop(event)"
+                         ondrop="dropToSlot(event,'away',{{ i }})">
+                      <span class="slot-num">{{ i }}.</span>
+                      <div class="slot-content" id="awaySlot{{ i }}">
+                        {% if pid %}
+                        {% for p in away_batters %}{% if p.id == pid %}
+                        {% set ps = player_stats_map.get(p.id) %}
+                        <div class="player-chip in-slot"
+                             draggable="true"
+                             data-pid="{{ p.id }}"
+                             data-label="{{ p.name | last_first }} ({{ p.position or '?' }})"
+                             data-wrc="{{ ps.wrc_plus if ps and ps.wrc_plus is not none else '' }}"
+                             ondragstart="dragStart(event,'away')">
+                          {{ p.name | last_first }}<span class="pos-badge">{{ p.position or '?' }}</span>{% if ps and ps.wrc_plus is not none %}<span class="wrc-badge">{{ ps.wrc_plus }}</span>{% endif %}
+                        </div>
+                        {% endif %}{% endfor %}
+                        {% endif %}
+                      </div>
+                    </div>
+                    {% endfor %}
+                  </div>
+
+                </div><!-- /row -->
+              </div><!-- /away col -->
+
+              <!-- ── HOME ── -->
+              <div class="col-md-6">
+                <div class="fw-semibold text-warning small mb-2 text-uppercase">
+                  <i class="bi bi-grip-vertical"></i>
+                  Home Batting Order — {{ home_team.name if home_team else 'Home' }}
+                </div>
+                <div class="row g-2">
+
+                  <!-- Home pool -->
+                  <div class="col-5">
+                    <div class="text-muted" style="font-size:0.70rem;">Available</div>
+                    <div id="homePool"
+                         class="lineup-pool border border-secondary rounded p-1"
+                         ondragover="allowDrop(event)"
+                         ondrop="dropToPool(event,'home')">
+                      {% for p in home_batters %}
+                      {% if p.id not in home_lineup_dict.values() %}
+                      {% set ps = player_stats_map.get(p.id) %}
+                      <div class="player-chip"
+                           draggable="true"
+                           data-pid="{{ p.id }}"
+                           data-label="{{ p.name | last_first }} ({{ p.position or '?' }})"
+                           data-wrc="{{ ps.wrc_plus if ps and ps.wrc_plus is not none else '' }}"
+                           ondragstart="dragStart(event,'home')">
+                        {{ p.name | last_first }}<span class="pos-badge">{{ p.position or '?' }}</span>{% if ps and ps.wrc_plus is not none %}<span class="wrc-badge">{{ ps.wrc_plus }}</span>{% endif %}
+                      </div>
+                      {% endif %}
+                      {% endfor %}
+                    </div>
+                  </div>
+
+                  <!-- Home order slots -->
+                  <div class="col-7">
+                    <div class="text-muted" style="font-size:0.70rem;">Batting Order</div>
+                    {% for i in range(1, 10) %}
+                    {% set pid = home_lineup_dict.get(i) %}
+                    <div class="lineup-slot"
+                         data-side="home" data-order="{{ i }}"
+                         ondragover="allowDrop(event)"
+                         ondrop="dropToSlot(event,'home',{{ i }})">
+                      <span class="slot-num">{{ i }}.</span>
+                      <div class="slot-content" id="homeSlot{{ i }}">
+                        {% if pid %}
+                        {% for p in home_batters %}{% if p.id == pid %}
+                        {% set ps = player_stats_map.get(p.id) %}
+                        <div class="player-chip in-slot"
+                             draggable="true"
+                             data-pid="{{ p.id }}"
+                             data-label="{{ p.name | last_first }} ({{ p.position or '?' }})"
+                             data-wrc="{{ ps.wrc_plus if ps and ps.wrc_plus is not none else '' }}"
+                             ondragstart="dragStart(event,'home')">
+                          {{ p.name | last_first }}<span class="pos-badge">{{ p.position or '?' }}</span>{% if ps and ps.wrc_plus is not none %}<span class="wrc-badge">{{ ps.wrc_plus }}</span>{% endif %}
+                        </div>
+                        {% endif %}{% endfor %}
+                        {% endif %}
+                      </div>
+                    </div>
+                    {% endfor %}
+                  </div>
+
+                </div><!-- /row -->
+              </div><!-- /home col -->
+
+            </div><!-- /batting orders row -->
+
+            <!-- ── Bullpen Section ────────────────────────────────────────── -->
+            <hr class="border-secondary mt-4 mb-3">
+            <div class="fw-semibold small text-uppercase mb-2" style="color:#aaa;">
+              <i class="bi bi-person-fill"></i> Expected Bullpen — drag pitchers most likely to appear (slot 1 = most likely)
+              <small class="fw-normal ms-2" style="font-size:0.7rem; text-transform:none;">
+                🟢 3+ days rest &nbsp;⚫ unknown &nbsp;🟡 2 days &nbsp;🔴 0-1 days &nbsp;<span style="color:#ff6b6b;">🚫 pitched yesterday</span>
+              </small>
+            </div>
+            <div class="row g-3">
+
+              {# ── Reusable macro for a bullpen chip ── #}
+              {%- macro bp_chip_html(entry, side, in_slot=false) -%}
+              <div class="player-chip bp-chip{% if in_slot %} in-slot{% endif %}{% if entry.bp_unavailable %} bp-unavailable{% endif %}"
+                   draggable="true"
+                   data-pid="{{ entry.player.id }}"
+                   data-label="{{ entry.player.name | last_first }} ({{ entry.player.position or 'P' }})"
+                   data-avail-class="{{ entry.avail_class }}"
+                   data-avail-label="{{ entry.avail_label }}"
+                   ondragstart="dragStartBP(event,'{{ side }}')">
+                <span class="{% if entry.bp_unavailable %}bp-name-out{% endif %}">{{ entry.player.name | last_first }}</span>
+                <span class="pos-badge">{{ entry.player.position or 'P' }}</span>
+                {% if entry.bp_unavailable %}
+                <span class="avail-dot bg-danger" title="Pitched yesterday — unavailable">
+                  🚫{% if entry.pitches_yday %} {{ entry.pitches_yday }}p{% endif %}
+                </span>
+                {% else %}
+                <span class="avail-dot bg-{{ entry.avail_class }}" title="{{ entry.avail_label }} rest">{{ entry.avail_label }}</span>
+                {% endif %}
+              </div>
+              {%- endmacro -%}
+
+              <!-- ── AWAY Bullpen ── -->
+              <div class="col-md-6">
+                <div class="fw-semibold text-info small mb-2 text-uppercase" style="font-size:0.78rem;">
+                  Away Bullpen — {{ away_team.name if away_team else 'Away' }}
+                </div>
+                <div class="row g-2">
+                  <!-- Away BP pool -->
+                  <div class="col-5">
+                    <div class="text-muted" style="font-size:0.70rem;">Available</div>
+                    <div id="awayBPPool"
+                         class="lineup-pool border border-secondary rounded p-1"
+                         ondragover="allowDrop(event)"
+                         ondrop="dropToBPPool(event,'away')">
+                      {% for entry in away_reliever_pool %}
+                      {% if entry.player.id not in away_bullpen_dict.values() %}
+                      {{ bp_chip_html(entry, 'away') }}
+                      {% endif %}
+                      {% endfor %}
+                    </div>
+                  </div>
+                  <!-- Away BP slots -->
+                  <div class="col-7">
+                    <div class="text-muted" style="font-size:0.70rem;">Most Likely → Less Likely</div>
+                    {% for i in range(1, 6) %}
+                    {% set pid = away_bullpen_dict.get(i + 9) %}
+                    <div class="lineup-slot"
+                         data-side="away" data-order="{{ i }}"
+                         ondragover="allowDrop(event)"
+                         ondrop="dropToBPSlot(event,'away',{{ i }})">
+                      <span class="slot-num">{{ i }}.</span>
+                      <div class="slot-content" id="awayBPSlot{{ i }}">
+                        {% if pid %}
+                        {% for entry in away_reliever_pool %}{% if entry.player.id == pid %}
+                        {{ bp_chip_html(entry, 'away', in_slot=true) }}
+                        {% endif %}{% endfor %}
+                        {% endif %}
+                      </div>
+                    </div>
+                    {% endfor %}
+                  </div>
+                </div>
+              </div><!-- /away bullpen col -->
+
+              <!-- ── HOME Bullpen ── -->
+              <div class="col-md-6">
+                <div class="fw-semibold text-warning small mb-2 text-uppercase" style="font-size:0.78rem;">
+                  Home Bullpen — {{ home_team.name if home_team else 'Home' }}
+                </div>
+                <div class="row g-2">
+                  <!-- Home BP pool -->
+                  <div class="col-5">
+                    <div class="text-muted" style="font-size:0.70rem;">Available</div>
+                    <div id="homeBPPool"
+                         class="lineup-pool border border-secondary rounded p-1"
+                         ondragover="allowDrop(event)"
+                         ondrop="dropToBPPool(event,'home')">
+                      {% for entry in home_reliever_pool %}
+                      {% if entry.player.id not in home_bullpen_dict.values() %}
+                      {{ bp_chip_html(entry, 'home') }}
+                      {% endif %}
+                      {% endfor %}
+                    </div>
+                  </div>
+                  <!-- Home BP slots -->
+                  <div class="col-7">
+                    <div class="text-muted" style="font-size:0.70rem;">Most Likely → Less Likely</div>
+                    {% for i in range(1, 6) %}
+                    {% set pid = home_bullpen_dict.get(i + 9) %}
+                    <div class="lineup-slot"
+                         data-side="home" data-order="{{ i }}"
+                         ondragover="allowDrop(event)"
+                         ondrop="dropToBPSlot(event,'home',{{ i }})">
+                      <span class="slot-num">{{ i }}.</span>
+                      <div class="slot-content" id="homeBPSlot{{ i }}">
+                        {% if pid %}
+                        {% for entry in home_reliever_pool %}{% if entry.player.id == pid %}
+                        {{ bp_chip_html(entry, 'home', in_slot=true) }}
+                        {% endif %}{% endfor %}
+                        {% endif %}
+                      </div>
+                    </div>
+                    {% endfor %}
+                  </div>
+                </div>
+              </div><!-- /home bullpen col -->
+
+            </div><!-- /bullpen row -->
+
+            <!-- Save -->
+            <div class="d-flex justify-content-end gap-2 mt-3">
+              <button type="button" class="btn btn-outline-secondary btn-sm"
+                      data-bs-toggle="collapse" data-bs-target="#lineupEditor">
+                Cancel
+              </button>
+              <button type="submit" class="btn btn-success btn-sm px-4">
+                <i class="bi bi-save"></i> Save Lineup
+              </button>
+            </div>
+
+          </form>
+        </div>
+      </div>
+    </div>
+    {% endif %}
+
+  </div>
+
+</div>
+{% endblock %}
+
+{% block scripts %}
+<style>
+/* ── Drag-and-drop lineup builder ─────────────────────────────────── */
+.lineup-pool {
+  min-height: 220px;
+  max-height: 320px;
+  overflow-y: auto;
+  background: #0d0d0d;
+}
+.lineup-slot {
+  display: flex;
+  align-items: center;
+  min-height: 34px;
+  margin-bottom: 3px;
+  border: 1px dashed #444;
+  border-radius: 4px;
+  padding: 2px 4px;
+  background: #111;
+  transition: background 0.15s;
+}
+.lineup-slot.drag-over {
+  background: #1a2a1a;
+  border-color: #28a745;
+}
+.slot-num {
+  color: #666;
+  font-weight: bold;
+  font-size: 0.78rem;
+  width: 18px;
+  flex-shrink: 0;
+}
+.slot-content {
+  flex: 1;
+  min-height: 28px;
+}
+.player-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  background: #1e2d1e;
+  border: 1px solid #2a5c2a;
+  border-radius: 3px;
+  padding: 2px 6px;
+  font-size: 0.78rem;
+  color: #ccc;
+  cursor: grab;
+  margin: 2px 1px;
+  white-space: nowrap;
+  user-select: none;
+  width: calc(100% - 4px);
+}
+.player-chip:active { cursor: grabbing; opacity: 0.7; }
+.player-chip.dragging { opacity: 0.4; }
+.player-chip.in-slot {
+  background: #162816;
+  border-color: #3a7a3a;
+  color: #e0e0e0;
+  width: 100%;
+}
+.pos-badge {
+  background: #333;
+  color: #aaa;
+  border-radius: 2px;
+  padding: 0 3px;
+  font-size: 0.68rem;
+  flex-shrink: 0;
+}
+.wrc-badge {
+  background: #1a3a1a;
+  color: #6fcf6f;
+  border: 1px solid #2d5a2d;
+  border-radius: 2px;
+  padding: 0 3px;
+  font-size: 0.65rem;
+  flex-shrink: 0;
+  margin-left: 2px;
+}
+/* Availability dot for bullpen chips */
+.avail-dot {
+  border-radius: 3px;
+  padding: 0 4px;
+  font-size: 0.62rem;
+  color: #fff;
+  font-weight: bold;
+  margin-left: auto;
+  flex-shrink: 0;
+  opacity: 0.9;
+}
+.avail-dot.bg-secondary { color: #ccc; }
+.avail-dot.bg-warning   { color: #000; }
+/* Unavailable (pitched yesterday) chip styling */
+.bp-unavailable {
+  background: rgba(220, 53, 69, 0.15) !important;
+  border: 1px solid rgba(220, 53, 69, 0.5) !important;
+  opacity: 0.75;
+}
+.bp-name-out {
+  text-decoration: line-through;
+  color: #aaa;
+}
+</style>
+
+<script>
+// ── Drag-and-drop lineup builder ─────────────────────────────────────────────
+// State: which player is currently being dragged, and where they came from
+let _drag = { pid: null, label: null, side: null, fromSlot: null };
+
+function dragStart(evt, side) {
+  const chip = evt.target.closest('.player-chip');
+  _drag.pid      = chip.dataset.pid;
+  _drag.label    = chip.dataset.label;
+  _drag.wrc      = chip.dataset.wrc || '';
+  _drag.side     = side;
+  // Was this chip sitting in a slot?
+  const slotEl   = chip.closest('.lineup-slot');
+  _drag.fromSlot = slotEl ? parseInt(slotEl.dataset.order) : null;
+  chip.classList.add('dragging');
+  evt.dataTransfer.effectAllowed = 'move';
+}
+
+function allowDrop(evt) {
+  evt.preventDefault();
+  const target = evt.currentTarget;
+  target.classList.add('drag-over');
+}
+
+// Remove the highlight when the drag leaves
+document.addEventListener('dragover', () => {});
+document.addEventListener('dragleave', evt => {
+  if (evt.currentTarget !== document) return;
+  document.querySelectorAll('.drag-over').forEach(el => el.classList.remove('drag-over'));
+});
+
+function _clearDragOver() {
+  document.querySelectorAll('.drag-over').forEach(el => el.classList.remove('drag-over'));
+}
+
+function _makeChip(pid, label, side, wrc) {
+  const d = document.createElement('div');
+  d.className       = 'player-chip in-slot';
+  d.draggable       = true;
+  d.dataset.pid     = pid;
+  d.dataset.label   = label;
+  if (wrc !== undefined && wrc !== null && wrc !== '') d.dataset.wrc = wrc;
+  const namePart    = label.split('(')[0].trim();
+  const posPart     = (label.match(/\(([^)]+)\)/) || ['','?'])[1];
+  const wrcBadge    = (wrc !== undefined && wrc !== null && wrc !== '')
+                        ? `<span class="wrc-badge">${wrc}</span>` : '';
+  d.innerHTML       = `${namePart}<span class="pos-badge">${posPart}</span>${wrcBadge}`;
+  d.addEventListener('dragstart', e => dragStart(e, side));
+  return d;
+}
+
+function _makePoolChip(pid, label, side, wrc) {
+  const d = _makeChip(pid, label, side, wrc);
+  d.classList.remove('in-slot');
+  d.style.width = 'calc(100% - 4px)';
+  return d;
+}
+
+function _updateHidden(side, order, pid) {
+  const el = document.getElementById(side + 'Batter' + order);
+  if (el) el.value = pid || '';
+}
+
+function dropToSlot(evt, side, order) {
+  evt.preventDefault();
+  _clearDragOver();
+  if (_drag.pid === null || _drag.side !== side) return;
+
+  const slotContent = document.getElementById(side + 'Slot' + order);
+  const pool        = document.getElementById(side + 'Pool');
+
+  // If something already occupies this slot, send it somewhere sensible
+  const existing = slotContent.querySelector('.player-chip');
+  if (existing) {
+    const existPid   = existing.dataset.pid;
+    const existLabel = existing.dataset.label;
+    const existWrc   = existing.dataset.wrc || '';
+    if (_drag.fromSlot !== null) {
+      // Swap: put the existing player into the slot we came from
+      const fromContent = document.getElementById(side + 'Slot' + _drag.fromSlot);
+      fromContent.innerHTML = '';
+      fromContent.appendChild(_makeChip(existPid, existLabel, side, existWrc));
+      _updateHidden(side, _drag.fromSlot, existPid);
+    } else {
+      // Came from pool: return existing player to pool
+      pool.appendChild(_makePoolChip(existPid, existLabel, side, existWrc));
+      _updateHidden(side, order, '');
+    }
+    slotContent.innerHTML = '';
+  } else if (_drag.fromSlot !== null) {
+    // Vacate the source slot
+    const fromContent = document.getElementById(side + 'Slot' + _drag.fromSlot);
+    fromContent.innerHTML = '';
+    _updateHidden(side, _drag.fromSlot, '');
+  } else {
+    // Came from pool — remove the chip from pool
+    pool.querySelectorAll('.player-chip').forEach(c => {
+      if (c.dataset.pid === _drag.pid) c.remove();
+    });
+  }
+
+  // Place in the target slot
+  slotContent.appendChild(_makeChip(_drag.pid, _drag.label, side, _drag.wrc));
+  _updateHidden(side, order, _drag.pid);
+  _drag = { pid: null, label: null, wrc: '', side: null, fromSlot: null };
+}
+
+function dropToPool(evt, side) {
+  evt.preventDefault();
+  _clearDragOver();
+  if (_drag.pid === null || _drag.side !== side) return;
+
+  // Return to pool only if coming from a slot
+  if (_drag.fromSlot !== null) {
+    const fromContent = document.getElementById(side + 'Slot' + _drag.fromSlot);
+    fromContent.innerHTML = '';
+    _updateHidden(side, _drag.fromSlot, '');
+    const pool = document.getElementById(side + 'Pool');
+    pool.appendChild(_makePoolChip(_drag.pid, _drag.label, side, _drag.wrc));
+  }
+  _drag = { pid: null, label: null, wrc: '', side: null, fromSlot: null };
+}
+
+// Clear the dragging class when the drag ends (even if dropped nowhere)
+document.addEventListener('dragend', () => {
+  document.querySelectorAll('.dragging').forEach(el => el.classList.remove('dragging'));
+  _clearDragOver();
+});
+
+// ── Bullpen drag-and-drop ────────────────────────────────────────────────────
+let _dragBP = { pid: null, label: null, availClass: null, availLabel: null, side: null, fromSlot: null };
+
+function dragStartBP(evt, side) {
+  const chip = evt.target.closest('.player-chip');
+  _dragBP.pid        = chip.dataset.pid;
+  _dragBP.label      = chip.dataset.label;
+  _dragBP.availClass = chip.dataset.availClass;
+  _dragBP.availLabel = chip.dataset.availLabel;
+  _dragBP.side       = side;
+  const slotEl       = chip.closest('.lineup-slot');
+  _dragBP.fromSlot   = slotEl ? parseInt(slotEl.dataset.order) : null;
+  chip.classList.add('dragging');
+  evt.dataTransfer.effectAllowed = 'move';
+}
+
+function _makeBPChip(pid, label, availClass, availLabel, side, inSlot) {
+  const d = document.createElement('div');
+  d.className              = 'player-chip bp-chip' + (inSlot ? ' in-slot' : '');
+  d.draggable              = true;
+  d.dataset.pid            = pid;
+  d.dataset.label          = label;
+  d.dataset.availClass     = availClass || 'secondary';
+  d.dataset.availLabel     = availLabel || '—';
+  const namePart           = label.split('(')[0].trim();
+  const posPart            = (label.match(/\(([^)]+)\)/) || ['','P'])[1];
+  const ac                 = availClass || 'secondary';
+  const al                 = availLabel || '—';
+  d.innerHTML = `${namePart}<span class="pos-badge">${posPart}</span><span class="avail-dot bg-${ac}">${al}</span>`;
+  d.addEventListener('dragstart', e => dragStartBP(e, side));
+  return d;
+}
+
+function _updateBPHidden(side, order, pid) {
+  const cap = side.charAt(0).toUpperCase() + side.slice(1);
+  const el  = document.getElementById(cap + 'Reliever' + order);
+  if (el) el.value = pid || '';
+}
+
+function dropToBPSlot(evt, side, order) {
+  evt.preventDefault();
+  _clearDragOver();
+  if (_dragBP.pid === null || _dragBP.side !== side) return;
+
+  const slotContent = document.getElementById(side + 'BPSlot' + order);
+  const pool        = document.getElementById(side + 'BPPool');
+
+  const existing = slotContent.querySelector('.player-chip');
+  if (existing) {
+    const ep = existing.dataset.pid, el = existing.dataset.label;
+    const ea = existing.dataset.availClass, eal = existing.dataset.availLabel;
+    if (_dragBP.fromSlot !== null) {
+      const fromContent = document.getElementById(side + 'BPSlot' + _dragBP.fromSlot);
+      fromContent.innerHTML = '';
+      fromContent.appendChild(_makeBPChip(ep, el, ea, eal, side, true));
+      _updateBPHidden(side, _dragBP.fromSlot, ep);
+    } else {
+      pool.appendChild(_makeBPChip(ep, el, ea, eal, side, false));
+      _updateBPHidden(side, order, '');
+    }
+    slotContent.innerHTML = '';
+  } else if (_dragBP.fromSlot !== null) {
+    const fromContent = document.getElementById(side + 'BPSlot' + _dragBP.fromSlot);
+    fromContent.innerHTML = '';
+    _updateBPHidden(side, _dragBP.fromSlot, '');
+  } else {
+    pool.querySelectorAll('.player-chip').forEach(c => {
+      if (c.dataset.pid === _dragBP.pid) c.remove();
+    });
+  }
+
+  slotContent.appendChild(_makeBPChip(_dragBP.pid, _dragBP.label, _dragBP.availClass, _dragBP.availLabel, side, true));
+  _updateBPHidden(side, order, _dragBP.pid);
+  _dragBP = { pid: null, label: null, availClass: null, availLabel: null, side: null, fromSlot: null };
+}
+
+function dropToBPPool(evt, side) {
+  evt.preventDefault();
+  _clearDragOver();
+  if (_dragBP.pid === null || _dragBP.side !== side) return;
+
+  if (_dragBP.fromSlot !== null) {
+    const fromContent = document.getElementById(side + 'BPSlot' + _dragBP.fromSlot);
+    fromContent.innerHTML = '';
+    _updateBPHidden(side, _dragBP.fromSlot, '');
+    const pool = document.getElementById(side + 'BPPool');
+    pool.appendChild(_makeBPChip(_dragBP.pid, _dragBP.label, _dragBP.availClass, _dragBP.availLabel, side, false));
+  }
+  _dragBP = { pid: null, label: null, availClass: null, availLabel: null, side: null, fromSlot: null };
+}
+
+// ── Auto-fill lineup from MLB Stats API ─────────────────────────────────────
+function fetchLineupFromMLB() {
+  const btn    = document.getElementById('fetchLineupBtn');
+  const status = document.getElementById('fetchLineupStatus');
+
+  btn.disabled = true;
+  btn.innerHTML = '<span class="spinner-border spinner-border-sm"></span> Fetching…';
+  status.className = 'alert alert-info py-2 small mb-3';
+  status.textContent = 'Contacting MLB API…';
+
+  fetch('/api/game/{{ game.id }}/fetch-lineup')
+    .then(r => r.json())
+    .then(data => {
+      btn.disabled = false;
+      btn.innerHTML = '<i class="bi bi-cloud-download"></i> Auto-Fill from MLB';
+
+      if (data.status === 'not_posted') {
+        status.className = 'alert alert-warning py-2 small mb-3';
+        status.textContent = data.message;
+        return;
+      }
+      if (data.status === 'error') {
+        status.className = 'alert alert-danger py-2 small mb-3';
+        status.textContent = 'Error: ' + data.message;
+        return;
+      }
+
+      // Fill drag-and-drop slots from API data
+      const sides = { away: data.away_lineup, home: data.home_lineup };
+      for (const [side, lineup] of Object.entries(sides)) {
+        // Clear all slots and return chips to pool first
+        for (let i = 1; i <= 9; i++) {
+          const sc = document.getElementById(side + 'Slot' + i);
+          if (sc) {
+            const chip = sc.querySelector('.player-chip');
+            if (chip) {
+              const pool = document.getElementById(side + 'Pool');
+              pool.appendChild(_makePoolChip(chip.dataset.pid, chip.dataset.label, side));
+              sc.innerHTML = '';
+            }
+            _updateHidden(side, i, '');
+          }
+        }
+        // Place players from API into their slots
+        for (const [order, player] of Object.entries(lineup)) {
+          const sc = document.getElementById(side + 'Slot' + order);
+          if (!sc) continue;
+          const label = player.name + ' (' + (player.position || '?') + ')';
+          // Remove from pool if present
+          const pool = document.getElementById(side + 'Pool');
+          pool.querySelectorAll('.player-chip').forEach(c => {
+            if (c.dataset.pid == player.id) c.remove();
+          });
+          sc.innerHTML = '';
+          // Find wrc+ from the pool chip if it exists (already has data-wrc set by Jinja)
+          let wrc = '';
+          document.getElementById(side + 'Pool').querySelectorAll('.player-chip').forEach(c => {
+            if (c.dataset.pid == player.id) wrc = c.dataset.wrc || '';
+          });
+          sc.appendChild(_makeChip(player.id, label, side, wrc));
+          _updateHidden(side, parseInt(order), player.id);
+        }
+      }
+
+      // Fill starters
+      if (data.away_pitcher) {
+        const sel = document.querySelector('select[name="away_starter_id"]');
+        if (sel) sel.value = data.away_pitcher.id;
+      }
+      if (data.home_pitcher) {
+        const sel = document.querySelector('select[name="home_starter_id"]');
+        if (sel) sel.value = data.home_pitcher.id;
+      }
+
+      const unmatched = data.total_batters - data.matched;
+      const unmatchedNote = unmatched > 0
+        ? ` <span class="text-warning">${unmatched} player(s) not found in your roster — fill those slots manually.</span>`
+        : '';
+
+      // Step 1 — Auto-save the lineup
+      status.className = 'alert alert-info py-2 small mb-3';
+      status.innerHTML = '<span class="spinner-border spinner-border-sm"></span> Saving lineup…';
+      const form = document.querySelector('#lineupEditor form');
+      fetch(form.action, { method: 'POST', body: new FormData(form) })
+        .then(saveResp => {
+          if (!saveResp.ok) {
+            status.className = 'alert alert-warning py-2 small mb-3';
+            status.innerHTML = '<i class="bi bi-exclamation-triangle-fill"></i> Lineup fetched but save failed — click Save Lineup manually, then Simulate.';
+            return;
+          }
+          // Step 2 — Run simulation automatically
+          status.innerHTML = '<span class="spinner-border spinner-border-sm"></span> Running 10,000 simulations…';
+          fetch('/simulate/{{ game.id }}', { method: 'POST' })
+            .then(r => r.json())
+            .then(simData => {
+              if (simData.success) {
+                status.className = 'alert alert-success py-2 small mb-3';
+                status.innerHTML = '<i class="bi bi-check-circle-fill"></i> Lineup imported, saved &amp; simulated!' + unmatchedNote + ' Reloading…';
+                setTimeout(() => window.location.reload(), 800);
+              } else {
+                status.className = 'alert alert-warning py-2 small mb-3';
+                status.innerHTML = '<i class="bi bi-check-circle-fill"></i> Lineup saved!' + unmatchedNote
+                  + ' <span class="text-warning ms-2">Simulation failed: ' + (simData.error || 'unknown error') + '</span>';
+              }
+            })
+            .catch(() => {
+              status.className = 'alert alert-warning py-2 small mb-3';
+              status.innerHTML = '<i class="bi bi-check-circle-fill"></i> Lineup saved!' + unmatchedNote
+                + ' <span class="text-warning ms-2">Could not run simulation — click Simulate manually.</span>';
+            });
+        })
+        .catch(() => {
+          status.className = 'alert alert-warning py-2 small mb-3';
+          status.innerHTML = '<i class="bi bi-exclamation-triangle-fill"></i> Lineup fetched but save failed — click Save Lineup manually, then Simulate.';
+        });
+    })
+    .catch(() => {
+      btn.disabled = false;
+      btn.innerHTML = '<i class="bi bi-cloud-download"></i> Auto-Fill from MLB';
+      status.className = 'alert alert-danger py-2 small mb-3';
+      status.textContent = 'Network error. Check your connection and try again.';
+    });
+}
+
+// Auto-fetch result from MLB API
+function fetchResult(gameId, btn) {
+  const status = document.getElementById('fetchResultStatus');
+  btn.disabled = true;
+  btn.innerHTML = '<span class="spinner-border spinner-border-sm"></span> Fetching…';
+
+  fetch(`/api/game/${gameId}/fetch-result`)
+    .then(r => r.json())
+    .then(data => {
+      btn.disabled = false;
+      btn.innerHTML = '<i class="bi bi-cloud-download"></i> Auto-Fetch from MLB';
+      status.classList.remove('d-none', 'alert-info', 'alert-success', 'alert-warning', 'alert-danger');
+
+      if (data.success) {
+        status.classList.add('alert-success');
+        status.textContent = `Score saved: Away ${data.away_score} — Home ${data.home_score}. ${data.bets_resolved} bet(s) graded. Refreshing…`;
+        setTimeout(() => location.reload(), 1500);
+      } else if (data.pending) {
+        status.classList.add('alert-warning');
+        status.textContent = data.message;
+      } else {
+        status.classList.add('alert-danger');
+        status.textContent = data.error || 'Failed to fetch result.';
+      }
+    })
+    .catch(() => {
+      btn.disabled = false;
+      btn.innerHTML = '<i class="bi bi-cloud-download"></i> Auto-Fetch from MLB';
+      status.classList.remove('d-none');
+      status.classList.add('alert-danger');
+      status.textContent = 'Network error. Try again.';
+    });
+}
+
+// ── Place Bet modal ──────────────────────────────────────────────────────────
+let _placingBetId   = null;
+let _placingKellyAmt = 0;
+
+function openPlaceModal(betId, kellyAmt, typeLabel, sideLabel, priceLabel) {
+  _placingBetId    = betId;
+  _placingKellyAmt = kellyAmt;
+  document.getElementById('modal-bet-desc').textContent =
+    `${typeLabel} · ${sideLabel} · ${priceLabel}`;
+  document.getElementById('modal-kelly-amt').textContent = `$${Math.round(kellyAmt)}`;
+  const input = document.getElementById('modal-bet-amount');
+  input.value = Math.round(kellyAmt);
+  const modal = new bootstrap.Modal(document.getElementById('placeBetModal'));
+  modal.show();
+  // Focus & select the amount so user can type immediately
+  setTimeout(() => { input.select(); }, 300);
+}
+
+function confirmPlaceBet() {
+  const amount = parseFloat(document.getElementById('modal-bet-amount').value);
+  if (!amount || amount <= 0) {
+    document.getElementById('modal-bet-amount').classList.add('is-invalid');
+    return;
+  }
+  const modal = bootstrap.Modal.getInstance(document.getElementById('placeBetModal'));
+  modal.hide();
+
+  fetch(`/bet/${_placingBetId}/place`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ amount }),
+  })
+  .then(r => r.json())
+  .then(data => {
+    if (!data.success) return;
+    // Update wagered cell
+    document.getElementById(`wagered-${_placingBetId}`).innerHTML =
+      `<span class="text-warning">$${Math.round(data.amount)}</span>`;
+    // Swap action button to Undo
+    document.getElementById(`action-${_placingBetId}`).innerHTML =
+      `<button class="btn btn-sm btn-outline-danger py-0 px-2"
+               onclick="unplaceBet(${_placingBetId}, this)"
+               title="Remove this bet from tracking">
+         <i class="bi bi-x-lg"></i> Undo
+       </button>`;
+  });
+}
+
+function unplaceBet(betId) {
+  if (!confirm('Remove this bet from tracking?')) return;
+  fetch(`/bet/${betId}/unplace`, { method: 'POST' })
+  .then(r => r.json())
+  .then(data => {
+    if (!data.success) { alert(data.error || 'Could not unplace bet.'); return; }
+    // Reset wagered cell
+    document.getElementById(`wagered-${betId}`).innerHTML =
+      `<span class="text-muted" style="font-size:0.75rem;">not placed</span>`;
+    // Restore Place Bet button — reload is simplest since we need template data
+    location.reload();
+  });
+}
+
+
+function fetchWeather() {
+  const btn    = document.getElementById('weatherBtn');
+  const status = document.getElementById('weatherStatus');
+  btn.disabled = true;
+  btn.innerHTML = '<span class="spinner-border spinner-border-sm"></span> Fetching…';
+  status.className = 'alert alert-info py-2 small mb-3';
+  status.textContent = 'Fetching weather…';
+
+  fetch('/api/weather/{{ game.id }}')
+    .then(r => r.json())
+    .then(data => {
+      btn.disabled = false;
+      btn.innerHTML = '<i class="bi bi-cloud-sun"></i> Fetch Weather';
+      if (data.dome) {
+        status.className = 'alert alert-warning py-2 small mb-3';
+        status.textContent = data.message; return;
+      }
+      if (data.error) {
+        status.className = 'alert alert-danger py-2 small mb-3';
+        status.textContent = data.error; return;
+      }
+      document.getElementById('temperature_f').value  = Math.round(data.temperature_f);
+      document.getElementById('wind_speed_mph').value = Math.round(data.wind_speed_mph);
+      document.getElementById('humidity_pct').value   = Math.round(data.humidity_pct);
+      document.getElementById('pressure_inhg').value  = data.pressure_inhg;
+      if (data.wind_speed_mph < 4) {
+        const sel = document.getElementById('wind_direction');
+        for (let opt of sel.options) { if (opt.text.includes('Calm')) { opt.selected = true; break; } }
+        document.getElementById('windHint').style.display = 'none';
+      } else {
+        document.getElementById('windFrom').textContent = data.wind_compass;
+        document.getElementById('windHint').style.display = 'block';
+      }
+      status.className = 'alert alert-success py-2 small mb-3';
+      status.innerHTML = `<strong>${data.park_name}</strong> — ${data.description || ''}, ` +
+        `${Math.round(data.temperature_f)}°F, wind ${Math.round(data.wind_speed_mph)} mph from ${data.wind_compass}. ` +
+        `<span class="text-warning">▸ Set wind direction above.</span>`;
+    })
+    .catch(() => {
+      btn.disabled = false;
+      btn.innerHTML = '<i class="bi bi-cloud-sun"></i> Fetch Weather';
+      status.className = 'alert alert-danger py-2 small mb-3';
+      status.textContent = 'Network error fetching weather.';
+    });
+}
+
+// Drag-and-drop is self-managing — no init needed
+
+// ── Quick Simulate: import lineup from MLB + save + run sims in one click ──
+async function quickSimulate(gameId, btn) {
+  const origHtml = btn.innerHTML;
+  const statusDiv = document.getElementById('quickSimStatus');
+  btn.disabled = true;
+
+  function setStatus(cls, msg) {
+    statusDiv.className = `alert alert-${cls} py-2 small mb-2`;
+    statusDiv.innerHTML = msg;
+    statusDiv.classList.remove('d-none');
+  }
+
+  try {
+    // Step 1 — fetch official lineup from MLB
+    btn.innerHTML = '<span class="spinner-border spinner-border-sm"></span> Step 1/3 · Fetching lineup from MLB…';
+    const fetchResp = await fetch(`/api/game/${gameId}/fetch-lineup`);
+    const fetchData = await fetchResp.json();
+
+    if (fetchData.status === 'error') {
+      throw new Error(fetchData.message || 'Could not contact MLB API.');
+    }
+
+    if (fetchData.status === 'not_posted') {
+      // Lineup not up yet — try to simulate with whatever is already saved
+      setStatus('warning', `<i class="bi bi-exclamation-triangle-fill"></i> ${fetchData.message} Running simulation with the lineup already on file…`);
+      btn.innerHTML = '<span class="spinner-border spinner-border-sm"></span> Step 2/2 · Running 10,000 sims…';
+      const simResp2 = await fetch(`/simulate/${gameId}`, { method: 'POST' });
+      const simData2 = await simResp2.json();
+      if (simData2.success) {
+        setStatus('success', '<i class="bi bi-check-circle-fill"></i> Done! Reloading results…');
+        window.location.reload();
+      } else {
+        throw new Error(simData2.error || 'Simulation failed. Make sure both lineups have 9 batters saved.');
+      }
+      return;
+    }
+
+    // Step 2 — save lineup, but ONLY if we got all 9 batters for both teams.
+    // If partial match, we leave the existing saved lineup alone to avoid wiping
+    // a good lineup with an incomplete one and then failing the simulation.
+    const homeCount = Object.keys(fetchData.home_lineup || {}).length;
+    const awayCount = Object.keys(fetchData.away_lineup || {}).length;
+
+    if (homeCount >= 9 && awayCount >= 9) {
+      btn.innerHTML = '<span class="spinner-border spinner-border-sm"></span> Step 2/3 · Saving lineup…';
+      const fd = new FormData();
+      for (const [ord, p] of Object.entries(fetchData.home_lineup || {})) fd.append(`home_batter_${ord}`, p.id);
+      for (const [ord, p] of Object.entries(fetchData.away_lineup || {})) fd.append(`away_batter_${ord}`, p.id);
+      if (fetchData.home_pitcher) fd.append('home_starter_id', fetchData.home_pitcher.id);
+      if (fetchData.away_pitcher) fd.append('away_starter_id', fetchData.away_pitcher.id);
+      const saveResp = await fetch(`/game/${gameId}/lineup`, { method: 'POST', body: fd });
+      if (!saveResp.ok) throw new Error('Failed to save lineup. Try the manual lineup editor instead.');
+    } else {
+      // Partial match — don't overwrite the existing lineup in the database
+      const unmatched = (fetchData.total_batters || 0) - (fetchData.matched || 0);
+      setStatus('warning', `<i class="bi bi-exclamation-triangle-fill"></i> MLB has the lineup but ${unmatched} player(s) aren't in your roster yet — simulating with your current saved lineup instead.`);
+    }
+
+    // Step 3 — run Monte Carlo simulation
+    btn.innerHTML = '<span class="spinner-border spinner-border-sm"></span> Step 3/3 · Running 10,000 sims…';
+    const simResp = await fetch(`/simulate/${gameId}`, { method: 'POST' });
+    const simData = await simResp.json();
+    if (simData.success) {
+      setStatus('success', '<i class="bi bi-check-circle-fill"></i> Done! Loading results…');
+      window.location.reload();
+    } else {
+      throw new Error(simData.error || 'Simulation failed.');
+    }
+
+  } catch (e) {
+    setStatus('danger', `<i class="bi bi-x-circle-fill"></i> ${e.message}`);
+    btn.disabled = false;
+    btn.innerHTML = origHtml;
+  }
+}
+
+// ── Simulation ────────────────────────────────────────────────────────────
+function runSim(gameId, btn) {
+  btn.disabled = true;
+  btn.innerHTML = '<span class="spinner-border spinner-border-sm"></span> Running 10,000 sims...';
+  fetch(`/simulate/${gameId}`, { method: 'POST' })
+    .then(r => r.json())
+    .then(data => {
+      if (data.success) {
+        window.location.reload();
+      } else {
+        alert(data.error || 'Simulation failed.');
+        btn.disabled = false;
+        btn.innerHTML = 'Run Simulation';
+      }
+    });
+}
+
+{% if sim and sim.score_distribution %}
+// ── Totals recalculator — live update when user changes the line ──────────
+const SIM_BANKROLL   = {{ bankroll | default(1000) }};
+const SIM_MIN_EDGE   = {{ min_edge_pct | default(6.0) }};
+const SIM_UNDER_EDGE = Math.max({{ min_edge_pct | default(6.0) }}, 7.0);
+const SIM_KELLY_FRAC = {{ kelly_fraction | default(0.25) }};
+const SIM_MAX_BET    = SIM_BANKROLL * 0.05;
+
+// Book prices for BET/PASS comparison when line changes
+const BOOK_OVER_PRICE    = {{ totals_odds.over_price   if totals_odds and totals_odds.over_price   else 'null' }};
+const BOOK_UNDER_PRICE   = {{ totals_odds.under_price  if totals_odds and totals_odds.under_price  else 'null' }};
+const BOOK_F5_OVER_PRICE  = {{ f5_totals_odds.over_price  if f5_totals_odds and f5_totals_odds.over_price  else 'null' }};
+const BOOK_F5_UNDER_PRICE = {{ f5_totals_odds.under_price if f5_totals_odds and f5_totals_odds.under_price else 'null' }};
+
+// Store raw totals so recalc functions can work at any line
+let _simTotals   = null;
+let _simF5Totals = null;
+
+function _thrOdds(prob, minEdge) {
+  const imp = prob - minEdge / 100;
+  if (imp <= 0.01 || imp >= 0.99) return null;
+  return imp >= 0.5 ? Math.round(-(imp / (1 - imp)) * 100)
+                    : Math.round(((1 - imp) / imp) * 100);
+}
+function _impliedProb(americanOdds) {
+  if (americanOdds === null) return null;
+  return americanOdds < 0
+    ? (-americanOdds) / (-americanOdds + 100)
+    : 100 / (americanOdds + 100);
+}
+function _kellyBet(prob, odds) {
+  if (!odds) return 0;
+  const b = odds > 0 ? odds / 100 : 100 / Math.abs(odds);
+  const k = (b * prob - (1 - prob)) / b;
+  return Math.max(0, Math.min(SIM_BANKROLL * k * SIM_KELLY_FRAC, SIM_MAX_BET));
+}
+function _fmtOdds(o) {
+  if (o === null) return '—';
+  return (o > 0 ? '+' : '') + o;
+}
+function _thrHtml(thr) {
+  if (!thr) return '<span class="text-muted small">—</span>';
+  const cls = thr > 0 ? 'text-success' : 'text-light';
+  return `<span class="fw-bold ${cls}">${_fmtOdds(thr)}</span><span class="text-muted" style="font-size:0.78rem;"> or better</span>`;
+}
+function _actionHtml(bookPrice, thr, bookKelly) {
+  if (bookPrice === null) {
+    return '<span class="text-muted" style="font-size:0.75rem;">Enter odds →</span>';
+  }
+  const beats = bookPrice >= thr;
+  const edgePct = ((1 - _impliedProb(bookPrice)) - (1 - _impliedProb(thr))); // approx
+  if (beats) {
+    return `<span class="badge bg-success px-2 py-1"><i class="bi bi-check-circle-fill"></i> BET $${Math.round(bookKelly)}</span>`;
+  } else {
+    return `<span class="badge bg-secondary px-2 py-1"><i class="bi bi-slash-circle"></i> PASS</span>`;
+  }
+}
+
+function recalcTotals(lineVal) {
+  const line = parseFloat(lineVal);
+  if (isNaN(line) || line <= 0) return;
+
+  // Show spinner if data not yet loaded
+  if (!_simTotals) {
+    ['fg-over-sim','fg-under-sim'].forEach(id => {
+      const el = document.getElementById(id);
+      if (el) el.textContent = '…';
+    });
+    // Retry once data arrives (the fetch callback will call us again)
+    return;
+  }
+
+  const n = _simTotals.length;
+  const overCount  = _simTotals.filter(t => t > line).length;
+  const underCount = _simTotals.filter(t => t < line).length;
+  const overPct    = overCount  / n;
+  const underPct   = underCount / n;
+
+  const overThr   = _thrOdds(overPct,  Math.max(SIM_MIN_EDGE, 8.0));
+  const underThr  = _thrOdds(underPct, SIM_UNDER_EDGE);
+  const overKelly  = _kellyBet(overPct,  overThr);
+  const underKelly = _kellyBet(underPct, underThr);
+  // Kelly at the BOOK's price (what you'd actually bet if you take the book's odds)
+  const overBookKelly  = BOOK_OVER_PRICE  ? _kellyBet(overPct,  BOOK_OVER_PRICE)  : 0;
+  const underBookKelly = BOOK_UNDER_PRICE ? _kellyBet(underPct, BOOK_UNDER_PRICE) : 0;
+
+  // Update over row
+  document.getElementById('fg-over-market').textContent = `Over ${line}`;
+  document.getElementById('fg-over-sim').textContent    = (overPct * 100).toFixed(1) + '%';
+  document.getElementById('fg-over-thr').innerHTML      = _thrHtml(overThr);
+  document.getElementById('fg-over-kelly').textContent  = overKelly > 0 ? `$${Math.round(overKelly)}` : '—';
+  document.getElementById('fg-over-action').innerHTML   = _actionHtml(BOOK_OVER_PRICE, overThr, overBookKelly);
+
+  // Update under row
+  document.getElementById('fg-under-market').textContent = `Under ${line}`;
+  document.getElementById('fg-under-sim').textContent    = (underPct * 100).toFixed(1) + '%';
+  document.getElementById('fg-under-thr').innerHTML      = _thrHtml(underThr);
+  document.getElementById('fg-under-kelly').textContent  = underKelly > 0 ? `$${Math.round(underKelly)}` : '—';
+  document.getElementById('fg-under-action').innerHTML   = _actionHtml(BOOK_UNDER_PRICE, underThr, underBookKelly);
+
+  // Update book offering column to show edge % against new threshold
+  if (BOOK_OVER_PRICE !== null) {
+    const overEdge = ((overPct - _impliedProb(BOOK_OVER_PRICE)) * 100).toFixed(1);
+    document.getElementById('fg-over-book').innerHTML =
+      `<span class="fw-bold ${BOOK_OVER_PRICE > 0 ? 'text-success' : 'text-light'}">${_fmtOdds(BOOK_OVER_PRICE)}</span>` +
+      `<span class="text-muted" style="font-size:0.75rem;"> (+${overEdge}%)</span>`;
+  }
+  if (BOOK_UNDER_PRICE !== null) {
+    const underEdge = ((underPct - _impliedProb(BOOK_UNDER_PRICE)) * 100).toFixed(1);
+    document.getElementById('fg-under-book').innerHTML =
+      `<span class="fw-bold ${BOOK_UNDER_PRICE > 0 ? 'text-success' : 'text-light'}">${_fmtOdds(BOOK_UNDER_PRICE)}</span>` +
+      `<span class="text-muted" style="font-size:0.75rem;"> (+${underEdge}%)</span>`;
+  }
+
+  // Move the vertical line on the full-game chart
+  const chartEl = document.getElementById('distChart');
+  if (chartEl && chartEl.data && chartEl.data.length > 1) {
+    Plotly.restyle('distChart', { x: [[line, line]] }, [1]);
+  }
+}
+
+function recalcF5Totals(lineVal) {
+  const line = parseFloat(lineVal);
+  if (isNaN(line) || line <= 0) return;
+
+  if (!_simF5Totals) {
+    ['f5-over-sim','f5-under-sim'].forEach(id => {
+      const el = document.getElementById(id);
+      if (el) el.textContent = '…';
+    });
+    return;
+  }
+
+  const n = _simF5Totals.length;
+  const overCount  = _simF5Totals.filter(t => t > line).length;
+  const underCount = _simF5Totals.filter(t => t < line).length;
+  const overPct    = overCount  / n;
+  const underPct   = underCount / n;
+
+  // F5 uses the same base edge floor as full-game totals
+  const overThr   = _thrOdds(overPct,  Math.max(SIM_MIN_EDGE, 8.0));
+  const underThr  = _thrOdds(underPct, SIM_UNDER_EDGE);
+  const overKelly  = _kellyBet(overPct,  overThr);
+  const underKelly = _kellyBet(underPct, underThr);
+  const overBookKelly  = BOOK_F5_OVER_PRICE  ? _kellyBet(overPct,  BOOK_F5_OVER_PRICE)  : 0;
+  const underBookKelly = BOOK_F5_UNDER_PRICE ? _kellyBet(underPct, BOOK_F5_UNDER_PRICE) : 0;
+
+  // Update F5 over row
+  document.getElementById('f5-over-market').textContent = `F5 Over ${line}`;
+  document.getElementById('f5-over-sim').textContent    = (overPct * 100).toFixed(1) + '%';
+  document.getElementById('f5-over-thr').innerHTML      = _thrHtml(overThr);
+  document.getElementById('f5-over-kelly').textContent  = overKelly > 0 ? `$${Math.round(overKelly)}` : '—';
+  document.getElementById('f5-over-action').innerHTML   = _actionHtml(BOOK_F5_OVER_PRICE, overThr, overBookKelly);
+
+  // Update F5 under row
+  document.getElementById('f5-under-market').textContent = `F5 Under ${line}`;
+  document.getElementById('f5-under-sim').textContent    = (underPct * 100).toFixed(1) + '%';
+  document.getElementById('f5-under-thr').innerHTML      = _thrHtml(underThr);
+  document.getElementById('f5-under-kelly').textContent  = underKelly > 0 ? `$${Math.round(underKelly)}` : '—';
+  document.getElementById('f5-under-action').innerHTML   = _actionHtml(BOOK_F5_UNDER_PRICE, underThr, underBookKelly);
+
+  // Update book offering column with recalculated edge
+  if (BOOK_F5_OVER_PRICE !== null) {
+    const overEdge = ((overPct - _impliedProb(BOOK_F5_OVER_PRICE)) * 100).toFixed(1);
+    document.getElementById('f5-over-book').innerHTML =
+      `<span class="fw-bold ${BOOK_F5_OVER_PRICE > 0 ? 'text-success' : 'text-light'}">${_fmtOdds(BOOK_F5_OVER_PRICE)}</span>` +
+      `<span class="text-muted" style="font-size:0.75rem;"> (+${overEdge}%)</span>`;
+  }
+  if (BOOK_F5_UNDER_PRICE !== null) {
+    const underEdge = ((underPct - _impliedProb(BOOK_F5_UNDER_PRICE)) * 100).toFixed(1);
+    document.getElementById('f5-under-book').innerHTML =
+      `<span class="fw-bold ${BOOK_F5_UNDER_PRICE > 0 ? 'text-success' : 'text-light'}">${_fmtOdds(BOOK_F5_UNDER_PRICE)}</span>` +
+      `<span class="text-muted" style="font-size:0.75rem;"> (+${underEdge}%)</span>`;
+  }
+
+  // Move the vertical line on the F5 chart
+  const f5ChartEl = document.getElementById('f5DistChart');
+  if (f5ChartEl && f5ChartEl.data && f5ChartEl.data.length > 1) {
+    Plotly.restyle('f5DistChart', { x: [[line, line]] }, [1]);
+  }
+}
+
+// Build score distribution histogram
+fetch('/api/simulation/{{ game.id }}')
+  .then(r => r.json())
+  .then(data => {
+    const dist = data.score_distribution;
+    if (!dist) return;
+
+    // ── Full-game chart ──────────────────────────────────────────────
+    const totals = dist.home_scores.map((h, i) => h + dist.away_scores[i]);
+    _simTotals = totals;  // store for live recalculation
+
+    // Enable the input and auto-calculate with whatever line is set
+    const initLine = document.getElementById('totalLineInput');
+    if (initLine) {
+      initLine.disabled = false;
+      initLine.title = 'Change the total line to see what price you need';
+      const hint = document.getElementById('totalLineHint');
+      if (hint) hint.textContent = 'Type any total — sim % and thresholds update instantly';
+      // Use the box value, falling back to the sim's stored line, then 9.0
+      const startLine = parseFloat(initLine.value) || {{ sim.simulated_total_line or 9.0 }};
+      initLine.value = startLine;
+      recalcTotals(startLine);
+    }
+
+    const trace = {
+      x: totals,
+      type: 'histogram',
+      nbinsx: 25,
+      marker: { color: '#198754', opacity: 0.8 },
+      name: 'Total Runs',
+    };
+
+    {% if sim.simulated_total_line %}
+    const line = {
+      type: 'scatter', mode: 'lines',
+      x: [{{ sim.simulated_total_line }}, {{ sim.simulated_total_line }}],
+      y: [0, 400],
+      line: { color: '#ffc107', width: 2, dash: 'dash' },
+      name: 'O/U Line {{ sim.simulated_total_line }}',
+    };
+    Plotly.newPlot('distChart', [trace, line], {
+    {% else %}
+    Plotly.newPlot('distChart', [trace], {
+    {% endif %}
+      paper_bgcolor: 'transparent', plot_bgcolor: 'transparent',
+      font: { color: '#adb5bd', size: 11 },
+      margin: { t: 10, b: 40, l: 40, r: 10 },
+      xaxis: { title: 'Total Runs Scored', gridcolor: '#333' },
+      yaxis: { title: 'Simulations', gridcolor: '#333' },
+      legend: { x: 0.7, y: 0.95 },
+      showlegend: true,
+    }, { responsive: true, displayModeBar: false });
+
+    // ── F5 chart (uses home_f5_scores / away_f5_scores if present) ──
+    if (dist.home_f5_scores && dist.away_f5_scores) {
+      const f5Totals = dist.home_f5_scores.map((h, i) => h + dist.away_f5_scores[i]);
+      _simF5Totals = f5Totals;  // store for live F5 recalculation
+
+      // Enable F5 line input and auto-calculate
+      const f5Input = document.getElementById('f5TotalLineInput');
+      if (f5Input) {
+        f5Input.disabled = false;
+        f5Input.title = 'Change the F5 total line to see what price you need';
+        const f5Hint = document.getElementById('f5TotalLineHint');
+        if (f5Hint) f5Hint.textContent = 'Type any F5 total — sim % and thresholds update instantly';
+        const startF5 = parseFloat(f5Input.value) || {{ sim.f5_simulated_total_line or 4.5 }};
+        f5Input.value = startF5;
+        recalcF5Totals(startF5);
+      }
+
+      const f5Trace = {
+        x: f5Totals,
+        type: 'histogram',
+        nbinsx: 20,
+        marker: { color: '#7c3aed', opacity: 0.8 },
+        name: 'F5 Total Runs',
+      };
+
+      {% if sim.f5_simulated_total_line %}
+      const f5Line = {
+        type: 'scatter', mode: 'lines',
+        x: [{{ sim.f5_simulated_total_line }}, {{ sim.f5_simulated_total_line }}],
+        y: [0, 400],
+        line: { color: '#ffc107', width: 2, dash: 'dash' },
+        name: 'F5 O/U {{ sim.f5_simulated_total_line }}',
+      };
+      Plotly.newPlot('f5DistChart', [f5Trace, f5Line], {
+      {% else %}
+      Plotly.newPlot('f5DistChart', [f5Trace], {
+      {% endif %}
+        paper_bgcolor: 'transparent', plot_bgcolor: 'transparent',
+        font: { color: '#adb5bd', size: 11 },
+        margin: { t: 10, b: 40, l: 40, r: 10 },
+        xaxis: { title: 'F5 Runs Scored', gridcolor: '#333' },
+        yaxis: { title: 'Simulations', gridcolor: '#333' },
+        legend: { x: 0.7, y: 0.95 },
+        showlegend: true,
+      }, { responsive: true, displayModeBar: false });
+    }
+  });
+
+// Resize Plotly charts when switching to the F5 tab (tab was hidden during initial render)
+document.getElementById('f5-tab').addEventListener('shown.bs.tab', function () {
+  const f5el = document.getElementById('f5DistChart');
+  if (f5el && f5el.data) Plotly.Plots.resize(f5el);
+});
+{% endif %}
+</script>
+{% endblock %}

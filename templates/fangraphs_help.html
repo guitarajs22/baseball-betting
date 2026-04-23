@@ -1,0 +1,24 @@
+{% extends "base.html" %}
+{% block title %}FanGraphs Import Help{% endblock %}
+
+{% block content %}
+<div class="d-flex justify-content-between align-items-center mb-4">
+  <h4><i class="bi bi-file-earmark-spreadsheet"></i> Import FanGraphs Data</h4>
+  <a href="/" class="btn btn-outline-secondary btn-sm">← Back</a>
+</div>
+
+<div class="card bg-black border-secondary">
+  <div class="card-body">
+    <pre class="text-light" style="white-space:pre-wrap;font-size:0.9rem">{{ instructions }}</pre>
+  </div>
+</div>
+
+<div class="card bg-black border-warning mt-3">
+  <div class="card-header text-warning text-uppercase small">After Exporting</div>
+  <div class="card-body">
+    <p>Once you have your CSV files, run this command in your terminal to import them:</p>
+    <code class="text-success">python import_data.py</code>
+    <p class="mt-2 text-muted">This will load all CSV files from the <code>exports/</code> folder into the database.</p>
+  </div>
+</div>
+{% endblock %}

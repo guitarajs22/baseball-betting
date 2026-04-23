@@ -1,0 +1,1115 @@
+{% extends "base.html" %}
+{% from "wind_diagram.html" import wind_diagram %}
+{% block title %}Games — Baseball Betting{% endblock %}
+
+{% block content %}
+<div class="d-flex justify-content-between align-items-center mb-4">
+  <h4><i class="bi bi-calendar3"></i> Games — {{ target_date.strftime('%B %d, %Y') }}</h4>
+  <div class="d-flex gap-2 align-items-center">
+    <form method="GET" class="d-flex gap-2">
+      <input type="date" name="date" value="{{ target_date.isoformat() }}"
+             class="form-control" style="width:160px">
+      <button type="submit" class="btn btn-outline-light btn-sm">Go</button>
+    </form>
+    <button class="btn btn-outline-success btn-sm" id="settleBtn" onclick="settleAllGames(this)">
+      <i class="bi bi-check2-all"></i> Settle Games
+    </button>
+    <button class="btn btn-outline-warning btn-sm" id="refreshOddsBtn" onclick="refreshOdds(this)">
+      <i class="bi bi-arrow-repeat"></i> Refresh Odds
+    </button>
+    <button class="btn btn-outline-secondary btn-sm" id="recalcBetsBtn" onclick="recalcBets(this)"
+            title="Re-score all recommendations from odds already in the database (free — no API call)">
+      <i class="bi bi-calculator"></i> Recalc Bets
+    </button>
+    <button class="btn btn-outline-info btn-sm" id="fetchWeatherBtn" onclick="fetchAllWeather(this)">
+      <i class="bi bi-cloud-sun"></i> Fetch Weather
+    </button>
+    <a href="{{ url_for('import_games', date=target_date.isoformat()) }}"
+       class="btn btn-primary btn-sm" id="importGamesBtn">
+      <i class="bi bi-cloud-download"></i> Import from MLB
+    </a>
+    <a href="/game/new" class="btn btn-success btn-sm">+ New Game</a>
+  </div>
+</div>
+
+{% if games %}
+<div class="row g-3">
+  {% for game in games %}
+  {% set o = odds_map.get(game.id, {}) %}
+  {% set h2h = o.get('h2h', {}) %}
+  {% set totals = o.get('totals', {}) %}
+  {% set sim = sims_map.get(game.id) %}
+
+  <div class="col-12 col-md-6 col-xl-4">
+    <div class="card h-100">
+
+      <!-- Card Header: Matchup -->
+      <div class="card-header d-flex justify-content-between align-items-center py-1">
+        <div>
+          <div class="fw-bold" style="font-size:1rem;">
+            {% if game.status == 'final' and game.away_score is not none and game.home_score is not none %}
+              <span style="color:{% if game.away_score >= game.home_score %}var(--be-blue){% else %}var(--be-muted){% endif %};">
+                {{ game.away_team.abbreviation if game.away_team else '?' }}
+              </span>
+              <span class="mx-1 fw-normal text-muted" style="font-size:0.9rem;">
+                {{ game.away_score }} – {{ game.home_score }}
+              </span>
+              <span style="color:{% if game.home_score >= game.away_score %}var(--be-amber){% else %}var(--be-muted){% endif %};">
+                {{ game.home_team.abbreviation if game.home_team else '?' }}
+              </span>
+              <span class="badge bg-danger ms-2" style="font-size:0.65rem; vertical-align:middle;">FINAL</span>
+            {% else %}
+              <span style="color:var(--be-blue);">{{ game.away_team.abbreviation if game.away_team else '?' }}</span>
+              <span class="text-muted mx-1 fw-normal" style="font-size:0.85rem;">@</span>
+              <span style="color:var(--be-amber);">{{ game.home_team.abbreviation if game.home_team else '?' }}</span>
+            {% endif %}
+          </div>
+          {% if game.game_time_utc %}
+          <div class="text-muted" style="font-size:0.68rem; line-height:1.2;">
+            {{ game.game_time_utc | pacific_time }}
+          </div>
+          {% endif %}
+        </div>
+        <div class="d-flex gap-2 align-items-center flex-wrap">
+          {% if game.game_type == 'S' %}
+          <span class="badge bg-info" title="Spring Training">ST</span>
+          {% elif game.game_type in ('F','D','L','W') %}
+          <span class="badge bg-danger" title="Postseason">POST</span>
+          {% endif %}
+          {% if game.is_doubleheader %}
+          <span class="badge bg-warning" title="Doubleheader – Game {{ game.game_number }}">
+            DH G{{ game.game_number }}
+          </span>
+          {% endif %}
+          {% if sim %}
+          <span class="badge bg-success">Sim</span>
+          {% endif %}
+          <a href="{{ url_for('game_detail', game_id=game.id) }}"
+             class="btn btn-outline-secondary btn-sm py-0 px-2">Details →</a>
+          {% if game.status != 'final' and game.mlb_game_id %}
+          <button class="btn btn-primary btn-sm py-0 px-2"
+                  onclick="quickSimFromList({{ game.id }}, this)"
+                  title="Auto-import lineup from MLB and run simulation — opens results page">
+            <i class="bi bi-lightning-fill"></i>
+          </button>
+          {% endif %}
+          {% if game.status != 'final' %}
+          <button class="btn btn-outline-secondary btn-sm py-0 px-2"
+                  onclick="openBullpenModal({{ game.id }}, '{{ game.away_team.abbreviation if game.away_team else '?' }}', '{{ game.home_team.abbreviation if game.home_team else '?' }}')"
+                  title="Manage bullpen availability and pitch counts">
+            <i class="bi bi-person-lines-fill"></i>
+          </button>
+          {% endif %}
+        </div>
+      </div>
+
+      <div class="card-body py-2 px-2">
+
+        <!-- Starters Row -->
+        <div class="d-flex justify-content-between align-items-center mb-2" style="font-size:0.78rem;">
+          <div style="color:var(--be-blue);">
+            <span class="text-muted">Away SP:</span>
+            {{ game.away_starter.name if game.away_starter else '—' }}
+            {% if game.away_starter and game.away_starter.throws %}
+            <span class="badge bg-secondary ms-1" style="font-size:0.68rem;">{{ game.away_starter.throws }}HP</span>
+            {% endif %}
+          </div>
+          {% if not game.home_starter or not game.away_starter %}
+          <button class="btn btn-outline-secondary btn-sm py-0 px-1 refresh-starters-btn"
+                  data-game-id="{{ game.id }}"
+                  data-game-date="{{ game.game_date }}"
+                  title="Pull latest probable starters from MLB API"
+                  style="font-size:0.68rem; line-height:1.4;">
+            <i class="bi bi-arrow-clockwise"></i> SP
+          </button>
+          {% endif %}
+          <div class="text-end" style="color:var(--be-amber);">
+            <span class="text-muted">Home SP:</span>
+            {{ game.home_starter.name if game.home_starter else '—' }}
+            {% if game.home_starter and game.home_starter.throws %}
+            <span class="badge bg-secondary ms-1" style="font-size:0.68rem;">{{ game.home_starter.throws }}HP</span>
+            {% endif %}
+          </div>
+        </div>
+
+        <!-- ── Threshold + Live Entry Section ───────────────────────── -->
+        {% set thr = thresholds_map.get(game.id, {}) %}
+        {% if sim and game.status != 'final' %}
+        <div class="border rounded p-2 mb-2" style="font-size:0.78rem; background:var(--be-surface);">
+
+          <!-- Moneyline thresholds -->
+          <div class="row g-0 text-center">
+
+            <!-- Away -->
+            {% set ta = thr.get('away', {}) %}
+            <div class="col-5">
+              <div class="fw-semibold mb-1" style="font-size:0.72rem; color:var(--be-blue);">
+                {{ game.away_team.abbreviation if game.away_team else 'Away' }}
+              </div>
+              <div class="text-muted" style="font-size:0.65rem;">
+                Sim {{ ta.raw }}%
+                {% if ta.cal and ta.cal != ta.raw %}<span class="text-muted"> → {{ ta.cal }}%</span>{% endif %}
+              </div>
+              <div class="fw-bold {% if ta.threshold != '—' %}text-success{% else %}text-muted{% endif %}"
+                   style="font-size:0.88rem;">{{ ta.threshold or '—' }}</div>
+              <div class="text-muted" style="font-size:0.60rem;">
+                {% if ta.threshold != '—' %}bet if better{% endif %}
+              </div>
+              <input type="number"
+                     class="form-control form-control-sm text-center mt-1 ml-price-input"
+                     id="inp-away-{{ game.id }}"
+                     data-game="{{ game.id }}" data-side="away"
+                     data-prob="{{ ta.prob_for_calc or sim.away_win_pct }}"
+                     placeholder="your price"
+                     style="font-size:0.72rem; padding:2px 4px;">
+              <div class="fw-bold mt-1" id="bet-away-{{ game.id }}" style="font-size:0.78rem; min-height:1.1em;">—</div>
+            </div>
+
+            <!-- Center label -->
+            <div class="col-2 d-flex align-items-center justify-content-center">
+              <span class="text-muted" style="font-size:0.70rem;">ML</span>
+            </div>
+
+            <!-- Home -->
+            {% set th = thr.get('home', {}) %}
+            <div class="col-5">
+              <div class="fw-semibold mb-1" style="font-size:0.72rem; color:var(--be-amber);">
+                {{ game.home_team.abbreviation if game.home_team else 'Home' }}
+              </div>
+              <div class="text-muted" style="font-size:0.65rem;">
+                Sim {{ th.raw }}%
+                {% if th.cal and th.cal != th.raw %}<span class="text-muted"> → {{ th.cal }}%</span>{% endif %}
+              </div>
+              <div class="fw-bold {% if th.threshold != '—' %}text-success{% else %}text-muted{% endif %}"
+                   style="font-size:0.88rem;">{{ th.threshold or '—' }}</div>
+              <div class="text-muted" style="font-size:0.60rem;">
+                {% if th.threshold != '—' %}bet if better{% endif %}
+              </div>
+              <input type="number"
+                     class="form-control form-control-sm text-center mt-1 ml-price-input"
+                     id="inp-home-{{ game.id }}"
+                     data-game="{{ game.id }}" data-side="home"
+                     data-prob="{{ th.prob_for_calc or sim.home_win_pct }}"
+                     placeholder="your price"
+                     style="font-size:0.72rem; padding:2px 4px;">
+              <div class="fw-bold mt-1" id="bet-home-{{ game.id }}" style="font-size:0.78rem; min-height:1.1em;">—</div>
+            </div>
+          </div><!-- /row -->
+
+          <!-- Totals entry -->
+          <hr class="my-2" style="border-color:var(--be-border);">
+          <div class="row g-1 align-items-end text-center">
+            <div class="col-4">
+              <div class="text-muted mb-1" style="font-size:0.65rem;">Total line</div>
+              <input type="number"
+                     class="form-control form-control-sm text-center total-line-input"
+                     id="line-{{ game.id }}"
+                     data-game="{{ game.id }}"
+                     value="{{ totals.total_line if totals.get('total_line') else '' }}"
+                     placeholder="{{ '%.1f'|format(sim.total_avg_runs) }}"
+                     step="0.5"
+                     style="font-size:0.72rem; padding:2px 4px;">
+              <div class="text-muted mt-1" id="ou-probs-{{ game.id }}" style="font-size:0.62rem; min-height:1em;"></div>
+            </div>
+            <div class="col-4">
+              <div class="text-muted mb-1" style="font-size:0.65rem;">Over price</div>
+              <input type="number"
+                     class="form-control form-control-sm text-center total-price-input"
+                     id="over-price-{{ game.id }}"
+                     data-game="{{ game.id }}" data-side="over"
+                     value="{{ totals.over_price if totals.get('over_price') else '' }}"
+                     placeholder="-110"
+                     style="font-size:0.72rem; padding:2px 4px;">
+              <div class="fw-bold mt-1" id="bet-over-{{ game.id }}" style="font-size:0.75rem; min-height:1.1em;">—</div>
+            </div>
+            <div class="col-4">
+              <div class="text-muted mb-1" style="font-size:0.65rem;">Under price</div>
+              <input type="number"
+                     class="form-control form-control-sm text-center total-price-input"
+                     id="under-price-{{ game.id }}"
+                     data-game="{{ game.id }}" data-side="under"
+                     value="{{ totals.under_price if totals.get('under_price') else '' }}"
+                     placeholder="-110"
+                     style="font-size:0.72rem; padding:2px 4px;">
+              <div class="fw-bold mt-1" id="bet-under-{{ game.id }}" style="font-size:0.75rem; min-height:1.1em;">—</div>
+            </div>
+          </div><!-- /totals row -->
+
+          <!-- Proj total label -->
+          <div class="text-center text-muted mt-1" style="font-size:0.62rem;">
+            Proj total: <strong>{{ '%.1f'|format(sim.total_avg_runs) }}</strong>
+            &nbsp;·&nbsp;
+            Away avg: <strong style="color:var(--be-blue);">{{ '%.1f'|format(sim.away_avg_runs) }}</strong>
+            &nbsp;Home avg: <strong style="color:var(--be-amber);">{{ '%.1f'|format(sim.home_avg_runs) }}</strong>
+          </div>
+
+        </div><!-- /threshold box -->
+
+        {% elif game.status != 'final' %}
+        <div class="text-muted small text-center py-2 mb-2" style="font-size:0.72rem;">
+          <i class="bi bi-lightning"></i> Run simulation to see bet thresholds
+        </div>
+        {% endif %}
+
+        <!-- Wind Diagram -->
+        {% if game.wind_deg is not none or (game.ballpark and game.ballpark.roof_type == 'dome') %}
+        <div class="mt-2 pt-1 d-flex align-items-center gap-2" style="border-top:0.5px solid var(--be-border);">
+          {{ wind_diagram(game, size=70) }}
+          <div class="text-muted" style="font-size:0.70rem; line-height:1.5;">
+            <div class="fw-bold" style="font-size:0.72rem; color:var(--be-text);">
+              {{ game.ballpark.name if game.ballpark else 'Ballpark' }}
+            </div>
+            {% if game.temperature_f is not none %}
+            <div>{{ "%.0f"|format(game.temperature_f) }}°F</div>
+            {% endif %}
+            {% if game.humidity_pct is not none %}
+            <div>{{ "%.0f"|format(game.humidity_pct) }}% humidity</div>
+            {% endif %}
+          </div>
+        </div>
+        {% endif %}
+
+      </div><!-- /.card-body -->
+
+      <!-- ── Edge strip ─────────────────────────────────────── -->
+      {% set game_recs = recs_map.get(game.id, []) %}
+      {% if game_recs %}
+        {% set top_rec = game_recs[0] %}
+        {% set bet_label_map = {
+            'moneyline':    'ML',
+            'totals':       'O/U',
+            'runline':      'RL',
+            'f5_moneyline': 'F5 ML',
+            'f5_totals':    'F5 O/U',
+            'f5_runline':   'F5 RL',
+            'first_inning': '1st Inn'
+        } %}
+        {% set bet_label = bet_label_map.get(top_rec.bet_type, top_rec.bet_type | title) %}
+        {% set sp = top_rec.side.split(' ') %}
+        {% set sb = sp[0] %}
+        {% set sl = sp[1] if sp | length > 1 else '' %}
+        {% if sb in ('home', 'f5_home', 'f5_home_rl') %}
+          {% set sname = game.home_team.abbreviation if game.home_team else 'Home' %}
+        {% elif sb in ('away', 'f5_away', 'f5_away_rl') %}
+          {% set sname = game.away_team.abbreviation if game.away_team else 'Away' %}
+        {% elif sb == 'over' %}{% set sname = 'Over' + (' ' + sl if sl else '') %}
+        {% elif sb == 'under' %}{% set sname = 'Under' + (' ' + sl if sl else '') %}
+        {% elif sb == 'f5_over' %}{% set sname = 'F5 Over' + (' ' + sl if sl else '') %}
+        {% elif sb == 'f5_under' %}{% set sname = 'F5 Under' + (' ' + sl if sl else '') %}
+        {% elif sb in ('rifi', 'nrfi') %}{% set sname = sb | upper %}
+        {% else %}{% set sname = top_rec.side | title %}{% endif %}
+        <div class="edge-strip">
+          <div class="d-flex justify-content-between align-items-start">
+            <div>
+              <span class="edge-badge me-2">+{{ '%.1f'|format(top_rec.edge_pct) }}% edge</span>
+              <span class="edge-desc">{{ bet_label }} {{ sname }}
+                {% if top_rec.price %}
+                  <span class="text-muted fw-normal" style="font-size:11px;">
+                    {{ '+' if top_rec.price > 0 else '' }}{{ top_rec.price }}
+                  </span>
+                {% endif %}
+              </span>
+            </div>
+            <div class="text-end">
+              {% if top_rec.recommended_bet %}
+              <div class="edge-stat-label">Kelly bet</div>
+              <div class="edge-stat-value">${{ '%.0f'|format(top_rec.recommended_bet) }}</div>
+              {% endif %}
+            </div>
+          </div>
+          {% if top_rec.model_probability and top_rec.implied_probability %}
+          <div class="mt-1" style="font-size:11px; color:var(--be-muted);">
+            Model {{ '%.0f'|format(top_rec.model_probability * 100) }}%
+            vs book {{ '%.0f'|format(top_rec.implied_probability * 100) }}%
+            {% if game_recs | length > 1 %}· +{{ game_recs | length - 1 }} more{% endif %}
+          </div>
+          {% endif %}
+        </div>
+      {% elif sim and game.status != 'final' %}
+        <div class="edge-strip-empty">
+          <i class="bi bi-dash-circle me-1"></i> No edge found at current lines
+        </div>
+      {% endif %}
+
+    </div><!-- /.card -->
+  </div><!-- /.col -->
+  {% endfor %}
+</div><!-- /.row -->
+
+{% else %}
+<div class="alert alert-secondary">
+  No games found for {{ target_date.strftime('%B %d, %Y') }}.
+  <a href="/game/new" class="alert-link">Add a game manually</a>
+  or use <a href="{{ url_for('import_games', date=target_date.isoformat()) }}" class="alert-link">Import from MLB</a>.
+</div>
+{% endif %}
+
+<!-- Bullpen Availability Modal -->
+<div class="modal fade" id="bullpenModal" tabindex="-1">
+  <div class="modal-dialog modal-lg modal-dialog-scrollable">
+    <div class="modal-content">
+      <div class="modal-header">
+        <h5 class="modal-title" id="bullpenModalTitle">
+          <i class="bi bi-person-lines-fill"></i> Bullpen Availability
+        </h5>
+        <div class="ms-auto me-2">
+          <button class="btn btn-outline-secondary btn-sm" onclick="loadYesterday()">
+            <i class="bi bi-cloud-arrow-down"></i> Load Yesterday's Pitchers
+          </button>
+        </div>
+        <button type="button" class="btn-close" data-bs-dismiss="modal"></button>
+      </div>
+      <div class="modal-body" id="bullpenModalBody">
+        <div class="text-center text-muted py-4">
+          <span class="spinner-border spinner-border-sm"></span> Loading…
+        </div>
+      </div>
+      <div class="modal-footer">
+        <span class="text-muted small me-auto" id="bullpenSaveStatus"></span>
+        <button type="button" class="btn btn-secondary btn-sm" data-bs-dismiss="modal">Close</button>
+        <button type="button" class="btn btn-primary btn-sm" onclick="saveBullpen()">
+          <i class="bi bi-floppy-fill"></i> Save
+        </button>
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- Automation Status Panel -->
+<div class="mt-4 pt-3" style="border-top:0.5px solid var(--be-border);">
+  <div class="d-flex justify-content-between align-items-center mb-2">
+    <div class="section-header"><i class="bi bi-robot me-1"></i> Automation</div>
+    <button class="btn btn-link btn-sm text-muted p-0" style="font-size:0.72rem;" onclick="loadSchedulerStatus()">
+      <i class="bi bi-arrow-repeat"></i> Refresh
+    </button>
+  </div>
+  <div id="schedulerStatus" class="row g-2">
+    <div class="col-12 text-muted small text-center py-2">Loading…</div>
+  </div>
+</div>
+{% endblock %}
+
+{% block scripts %}
+<script src="https://cdn.jsdelivr.net/npm/sortablejs@1.15.2/Sortable.min.js"></script>
+<script>
+// Settle All Games
+function settleAllGames(btn) {
+  btn.disabled = true;
+  btn.innerHTML = '<span class="spinner-border spinner-border-sm"></span> Settling…';
+  fetch('{{ url_for("settle_games") }}')
+    .then(r => r.json())
+    .then(data => {
+      if (data.success) {
+        const msg = data.games_settled === 0
+          ? 'No games finished yet — check back after games end.'
+          : `${data.games_settled} game(s) settled and bets graded!`;
+        alert(msg);
+        if (data.games_settled > 0) location.reload();
+      }
+      btn.disabled = false;
+      btn.innerHTML = '<i class="bi bi-check2-all"></i> Settle Games';
+    })
+    .catch(() => {
+      btn.disabled = false;
+      btn.innerHTML = '<i class="bi bi-check2-all"></i> Settle Games';
+      alert('Error reaching MLB API. Try again.');
+    });
+}
+
+// Quick Simulate from game list: import lineup + simulate → open results page
+async function quickSimFromList(gameId, btn) {
+  const origHtml = btn.innerHTML;
+  btn.disabled = true;
+  btn.innerHTML = '<span class="spinner-border spinner-border-sm" style="width:10px;height:10px;border-width:1.5px"></span>';
+
+  try {
+    // Step 1 — fetch official lineup from MLB
+    const fetchResp = await fetch(`/api/game/${gameId}/fetch-lineup`);
+    const fetchData = await fetchResp.json();
+
+    // Step 2 — save lineup only if we got a full 9-batter match for both teams.
+    // A partial match would wipe the existing good lineup and break the simulation.
+    if (fetchData.status === 'posted') {
+      const homeCount = Object.keys(fetchData.home_lineup || {}).length;
+      const awayCount = Object.keys(fetchData.away_lineup || {}).length;
+      if (homeCount >= 9 && awayCount >= 9) {
+        const fd = new FormData();
+        for (const [ord, p] of Object.entries(fetchData.home_lineup || {})) fd.append(`home_batter_${ord}`, p.id);
+        for (const [ord, p] of Object.entries(fetchData.away_lineup || {})) fd.append(`away_batter_${ord}`, p.id);
+        if (fetchData.home_pitcher) fd.append('home_starter_id', fetchData.home_pitcher.id);
+        if (fetchData.away_pitcher) fd.append('away_starter_id', fetchData.away_pitcher.id);
+        await fetch(`/game/${gameId}/lineup`, { method: 'POST', body: fd });
+      }
+    }
+    // If not_posted or partial match, simulate with whatever is already saved
+
+    // Step 3 — simulate
+    const simResp = await fetch(`/simulate/${gameId}`, { method: 'POST' });
+    const simData = await simResp.json();
+    if (simData.success) {
+      // Stay on games tab — just reload to show updated sim results
+      btn.innerHTML = '<i class="bi bi-check-lg"></i>';
+      setTimeout(() => location.reload(), 600);
+    } else {
+      throw new Error(simData.error || 'Lineup not ready yet — try again closer to game time, or open Details to enter it manually.');
+    }
+  } catch (e) {
+    alert(e.message);
+    btn.disabled = false;
+    btn.innerHTML = origHtml;
+  }
+}
+
+// Refresh Odds
+function refreshOdds(btn) {
+  btn.disabled = true;
+  btn.innerHTML = '<span class="spinner-border spinner-border-sm"></span> Refreshing…';
+  fetch('{{ url_for("refresh_odds") }}', { headers: { 'Accept': 'application/json' } })
+    .then(r => r.json())
+    .then(data => {
+      if (data.success) {
+        const lines = data.rows_updated;
+        const games = data.games_matched;
+        const unmatched = data.unmatched || [];
+        let msg = lines > 0
+          ? `Updated ${lines} odds line(s) across ${games} game(s).`
+          : `API returned ${data.api_games_fetched} game(s) but none matched games in your DB for this date.`;
+        if (unmatched.length) {
+          msg += '\n\nNot matched:\n• ' + unmatched.join('\n• ');
+        }
+        btn.innerHTML = lines > 0
+          ? '<i class="bi bi-check2"></i> Updated!'
+          : '<i class="bi bi-exclamation-triangle"></i> No match';
+        if (lines > 0) {
+          setTimeout(() => location.reload(), 800);
+        } else {
+          alert(msg);
+          btn.disabled = false;
+          btn.innerHTML = '<i class="bi bi-arrow-repeat"></i> Refresh Odds';
+        }
+      } else {
+        btn.disabled = false;
+        btn.innerHTML = '<i class="bi bi-exclamation-triangle"></i> Error';
+        alert(data.error || 'Could not refresh odds.');
+      }
+    })
+    .catch(() => {
+      btn.disabled = false;
+      btn.innerHTML = '<i class="bi bi-arrow-repeat"></i> Refresh Odds';
+      alert('Could not reach the odds API. Check your connection and try again.');
+    });
+}
+
+function recalcBets(btn) {
+  btn.disabled = true;
+  btn.innerHTML = '<span class="spinner-border spinner-border-sm"></span> Recalculating…';
+  fetch('/api/recalculate-recs')
+    .then(r => r.json())
+    .then(data => {
+      if (data.ok) {
+        btn.innerHTML = '<i class="bi bi-check2"></i> Done!';
+        setTimeout(() => location.reload(), 600);
+      } else {
+        btn.disabled = false;
+        btn.innerHTML = '<i class="bi bi-calculator"></i> Recalc Bets';
+        alert(data.error || 'Recalculation failed.');
+      }
+    })
+    .catch(() => {
+      btn.disabled = false;
+      btn.innerHTML = '<i class="bi bi-calculator"></i> Recalc Bets';
+      alert('Could not reach the server. Is the app running?');
+    });
+}
+
+function fetchAllWeather(btn) {
+  btn.disabled = true;
+  btn.innerHTML = '<span class="spinner-border spinner-border-sm"></span> Fetching…';
+  fetch('/api/weather/bulk?date={{ target_date.isoformat() }}')
+    .then(r => r.json())
+    .then(data => {
+      if (data.error) {
+        btn.disabled = false;
+        btn.innerHTML = '<i class="bi bi-cloud-sun"></i> Fetch Weather';
+        alert(data.error + (data.help ? '\n\n' + data.help : ''));
+        return;
+      }
+      const domes = data.skipped_domes.length
+        ? `\n${data.skipped_domes.length} dome(s) skipped (weather doesn't apply).` : '';
+      const fails = data.failed.length
+        ? `\n${data.failed.length} failed: ` + data.failed.map(f => f.game).join(', ') : '';
+      btn.innerHTML = '<i class="bi bi-check2"></i> ' + data.updated.length + ' updated';
+      if (data.updated.length > 0) {
+        setTimeout(() => location.reload(), 800);
+      } else {
+        alert(data.summary + domes + fails);
+        btn.disabled = false;
+        btn.innerHTML = '<i class="bi bi-cloud-sun"></i> Fetch Weather';
+      }
+    })
+    .catch(() => {
+      btn.disabled = false;
+      btn.innerHTML = '<i class="bi bi-cloud-sun"></i> Fetch Weather';
+      alert('Network error fetching weather. Check your connection and try again.');
+    });
+}
+
+// ── Automation / Scheduler ─────────────────────────────────────────────────
+
+const JOB_META = {
+  import_games: { label: 'Import Tomorrow\'s Games', icon: 'bi-cloud-download', schedule: 'Daily 8 PM' },
+  weather:      { label: 'Refresh Weather',          icon: 'bi-cloud-sun',      schedule: 'Every hour' },
+  umpires:      { label: 'Umpire Assignments',        icon: 'bi-person-badge',   schedule: 'Daily 10 AM' },
+};
+
+function loadSchedulerStatus() {
+  fetch('/api/scheduler/status')
+    .then(r => r.json())
+    .then(data => {
+      const container = document.getElementById('schedulerStatus');
+      container.innerHTML = Object.entries(data).map(([id, job]) => {
+        const meta    = JOB_META[id] || { label: id, icon: 'bi-gear', schedule: '?' };
+        const statusColor = job.status === 'ok' ? 'success' : job.status === 'error' ? 'danger' : 'secondary';
+        const statusIcon  = job.status === 'ok' ? 'bi-check-circle-fill' : job.status === 'error' ? 'bi-x-circle-fill' : 'bi-dash-circle';
+        const lastRun  = job.last_run  || 'Never';
+        const nextRun  = job.next_run  || '—';
+        const detail   = job.detail   || '';
+        return `
+          <div class="col-12 col-md-4">
+            <div class="rounded p-2" style="background:#0d0d0d; border:1px solid #333; font-size:0.75rem;">
+              <div class="d-flex justify-content-between align-items-center mb-1">
+                <span class="fw-semibold text-light">
+                  <i class="bi ${meta.icon} me-1"></i>${meta.label}
+                </span>
+                <i class="bi ${statusIcon} text-${statusColor}" title="${detail}"></i>
+              </div>
+              <div class="text-muted mb-1">
+                <i class="bi bi-clock me-1"></i>${meta.schedule}
+              </div>
+              <div class="text-muted" style="font-size:0.68rem;">
+                Last: <span class="text-light">${lastRun}</span>
+              </div>
+              <div class="text-muted" style="font-size:0.68rem;">
+                Next: <span class="text-light">${nextRun}</span>
+              </div>
+              ${detail ? `<div class="text-muted mt-1" style="font-size:0.65rem; white-space:nowrap; overflow:hidden; text-overflow:ellipsis;" title="${detail}">${detail}</div>` : ''}
+              <button class="btn btn-outline-secondary btn-sm w-100 mt-2 py-0" style="font-size:0.70rem;"
+                      onclick="runJob('${id}', this)">
+                <i class="bi bi-play-fill"></i> Run Now
+              </button>
+            </div>
+          </div>`;
+      }).join('');
+    })
+    .catch(() => {
+      document.getElementById('schedulerStatus').innerHTML =
+        '<div class="col-12 text-muted small">Could not load scheduler status.</div>';
+    });
+}
+
+function runJob(jobId, btn) {
+  const origHtml = btn.innerHTML;
+  btn.disabled = true;
+  btn.innerHTML = '<span class="spinner-border spinner-border-sm" style="width:10px;height:10px;border-width:1.5px"></span> Running…';
+  fetch(`/api/scheduler/run/${jobId}`, { method: 'POST' })
+    .then(r => r.json())
+    .then(data => {
+      if (data.error) {
+        btn.innerHTML = '<i class="bi bi-x-circle"></i> Error';
+        setTimeout(() => { btn.disabled = false; btn.innerHTML = origHtml; }, 2500);
+        alert('Job failed: ' + data.error);
+      } else {
+        btn.innerHTML = '<i class="bi bi-check-lg"></i> Done';
+        setTimeout(() => {
+          btn.disabled = false;
+          btn.innerHTML = origHtml;
+          loadSchedulerStatus();
+          // Reload page if import_games or weather ran — those change visible data
+          if (jobId === 'import_games' || jobId === 'weather') location.reload();
+        }, 1200);
+      }
+    })
+    .catch(() => {
+      btn.disabled = false;
+      btn.innerHTML = origHtml;
+      alert('Network error — could not run job.');
+    });
+}
+
+// Load scheduler status on page load
+document.addEventListener('DOMContentLoaded', loadSchedulerStatus);
+
+// ── Threshold & Live Bet Calculator ───────────────────────────────────────
+const BANKROLL  = {{ bankroll | default(1000) }};
+const MIN_EDGE  = {{ min_edge | default(6.0) }};
+
+function calcThreshold(prob, edgePct) {
+  // Minimum decimal odds needed: (1 + edge%) / prob
+  const decimal = (1 + edgePct / 100) / prob;
+  if (decimal >= 2.0) {
+    return '+' + Math.round((decimal - 1) * 100);
+  } else {
+    return String(-Math.round(100 / (decimal - 1)));
+  }
+}
+
+function decimalFromAmerican(american) {
+  return american > 0 ? american / 100 + 1 : 100 / Math.abs(american) + 1;
+}
+
+function calcKellyBet(ourProb, marketOdds) {
+  const d    = decimalFromAmerican(marketOdds);
+  const edge = ourProb * d - 1;
+  if (edge <= 0) return 0;
+  const kelly = edge / (d - 1);
+  const bet   = kelly * 0.25 * BANKROLL;
+  return Math.min(bet, BANKROLL * 0.05, 500);
+}
+
+// ── Persist typed odds across page reloads (survives sim/reload) ──────────
+const ODDS_STORAGE_KEY = 'bettingedge_typed_odds';
+
+function _saveOddsToStorage() {
+  const saved = { _date: new Date().toDateString() };
+  ['.ml-price-input', '.total-line-input', '.total-price-input'].forEach(sel => {
+    document.querySelectorAll(sel).forEach(el => {
+      if (el.id && el.value.trim() !== '') saved[el.id] = el.value;
+    });
+  });
+  try { localStorage.setItem(ODDS_STORAGE_KEY, JSON.stringify(saved)); } catch (e) {}
+}
+
+function _restoreOddsFromStorage() {
+  try {
+    const saved = JSON.parse(localStorage.getItem(ODDS_STORAGE_KEY) || '{}');
+    // Discard entries from a previous day — today's game IDs differ
+    if (saved._date && saved._date !== new Date().toDateString()) return;
+    Object.entries(saved).forEach(([id, val]) => {
+      if (id === '_date') return;
+      const el = document.getElementById(id);
+      if (el) el.value = val;
+    });
+  } catch (e) {}
+}
+
+// Save whenever any odds field changes
+document.addEventListener('input', function (e) {
+  if (e.target.classList.contains('ml-price-input')    ||
+      e.target.classList.contains('total-line-input')  ||
+      e.target.classList.contains('total-price-input')) {
+    _saveOddsToStorage();
+  }
+});
+
+// If a total line is pre-filled, load the O/U probs immediately
+document.addEventListener('DOMContentLoaded', function () {
+  // Restore odds typed before the last reload, then trigger downstream calcs
+  _restoreOddsFromStorage();
+
+  document.querySelectorAll('.total-line-input').forEach(input => {
+    if (input.value) triggerOULookup(input);
+  });
+
+  // Re-fire ML bet-size display for any restored ML prices
+  document.querySelectorAll('.ml-price-input').forEach(input => {
+    if (input.value) input.dispatchEvent(new Event('input', { bubbles: true }));
+  });
+});
+
+// ML price input → instant bet size
+document.addEventListener('input', function (e) {
+  const input = e.target;
+  if (!input.classList.contains('ml-price-input')) return;
+
+  const prob    = parseFloat(input.dataset.prob);   // CALIBRATED prob (see thresholds_map)
+  const side    = input.dataset.side;
+  const gameId  = input.dataset.game;
+  const price   = parseInt(input.value);
+  const betEl   = document.getElementById(`bet-${side}-${gameId}`);
+  if (!betEl) return;
+
+  if (!price || isNaN(price)) {
+    betEl.textContent = '—';
+    betEl.className = 'fw-bold mt-1 text-muted';
+    return;
+  }
+
+  // Rec-engine filters (MUST match _generate_recommendations moneyline):
+  //   - Edge >= 8% (ML_MIN_EDGE — raised from 6% after backtest analysis)
+  //   - Market-implied prob < 65% (heavy-fav cut — -2.46% ROI above 65%)
+  const ML_MIN_EDGE    = 8.0;
+  const ML_MAX_IMPLIED = 0.65;
+
+  const impliedProb = price > 0 ? 100 / (price + 100) : Math.abs(price) / (Math.abs(price) + 100);
+  if (impliedProb >= ML_MAX_IMPLIED) {
+    betEl.textContent = 'Heavy fav (blocked)';
+    betEl.className = 'fw-bold mt-1 text-muted';
+    return;
+  }
+
+  const d       = decimalFromAmerican(price);
+  const edgePct = (prob * d - 1) * 100;
+  if (edgePct < ML_MIN_EDGE) {
+    betEl.textContent = `Edge ${edgePct.toFixed(1)}% (< ${ML_MIN_EDGE}%)`;
+    betEl.className = 'fw-bold mt-1 text-danger';
+    return;
+  }
+
+  const bet = calcKellyBet(prob, price);
+  if (bet > 0) {
+    betEl.textContent = `Bet $${Math.round(bet)}`;
+    betEl.className = 'fw-bold mt-1 text-success';
+  } else {
+    betEl.textContent = 'No value';
+    betEl.className = 'fw-bold mt-1 text-danger';
+  }
+});
+
+// Total line input → fetch O/U probs
+const _ouCache = {};
+
+async function triggerOULookup(input) {
+  const gameId = input.dataset.game;
+  const line   = parseFloat(input.value);
+  if (!line || isNaN(line)) return;
+
+  const probEl = document.getElementById(`ou-probs-${gameId}`);
+  if (probEl) probEl.textContent = 'Loading…';
+
+  try {
+    const resp = await fetch(`/api/game/${gameId}/ou-prob?line=${line}`);
+    const data = await resp.json();
+    if (data.error) { if (probEl) probEl.textContent = ''; return; }
+
+    const pushPct = data.push || 0;
+    _ouCache[gameId] = { line, over: data.over, under: data.under, push: pushPct };
+    if (probEl) {
+      const pushNote = pushPct > 0.005 ? `  ·  Push ${(pushPct * 100).toFixed(0)}%` : '';
+      probEl.textContent =
+        `O ${(data.over * 100).toFixed(0)}%  ·  U ${(data.under * 100).toFixed(0)}%${pushNote}`;
+    }
+
+    // Recalculate any prices already filled in
+    ['over', 'under'].forEach(side => {
+      const priceEl = document.getElementById(`${side}-price-${gameId}`);
+      if (priceEl && priceEl.value) updateTotalBet(gameId, side, parseInt(priceEl.value));
+    });
+  } catch (err) {
+    if (probEl) probEl.textContent = '';
+  }
+}
+
+document.addEventListener('change', function (e) {
+  if (e.target.classList.contains('total-line-input')) triggerOULookup(e.target);
+});
+
+// Total price input → instant bet size
+document.addEventListener('input', function (e) {
+  const input = e.target;
+  if (!input.classList.contains('total-price-input')) return;
+  updateTotalBet(input.dataset.game, input.dataset.side, parseInt(input.value));
+});
+
+function updateTotalBet(gameId, side, price) {
+  const betEl  = document.getElementById(`bet-${side}-${gameId}`);
+  const cached = _ouCache[gameId];
+  if (!betEl) return;
+
+  if (!cached || !price || isNaN(price)) {
+    betEl.textContent = '—';
+    betEl.className = 'fw-bold mt-1 text-muted';
+    return;
+  }
+
+  const rawProb = side === 'over' ? cached.over : cached.under;
+  const push    = cached.push || 0;
+
+  // Rec-engine filters (MUST match _generate_recommendations for totals):
+  //   - Raw prob >= 58% (TOTALS_MIN_RAW — below here the 2024+2025 backtest
+  //                      was losing money)
+  //   - Edge >= 9% (OVER/UNDER_MIN_EDGE — sweet spot from threshold sweep)
+  //   - Price <= +400 (MAX_UNDERDOG_ODDS)
+  // Below any of these the widget shows "below threshold" to match what the
+  // rec engine would actually save as a recommendation.
+  const TOTALS_MIN_RAW = 0.58;
+  const TOTALS_MIN_EDGE = 9.0;
+  const TOTALS_MAX_PRICE = 400;
+
+  if (rawProb < TOTALS_MIN_RAW) {
+    betEl.textContent = `Below ${(TOTALS_MIN_RAW*100).toFixed(0)}% floor`;
+    betEl.className = 'fw-bold mt-1 text-muted';
+    return;
+  }
+  if (price > TOTALS_MAX_PRICE) {
+    betEl.textContent = 'Price > +400';
+    betEl.className = 'fw-bold mt-1 text-muted';
+    return;
+  }
+
+  // Push-adjusted effective probability.
+  // A push returns your stake (not a loss), so the real EV is:
+  //   EV = prob_win*(d-1) - prob_loss*1   where prob_loss = 1 - rawProb - push
+  // This is equivalent to using an effective win probability of:
+  //   effective_prob = rawProb + push / d
+  // On half-point lines (8.5, 9.5) push == 0, so nothing changes.
+  // On whole-number lines (8, 9) push > 0, giving a slightly better number.
+  const d             = decimalFromAmerican(price);
+  const effectiveProb = rawProb + push / d;
+  const edgePct       = (effectiveProb * d - 1) * 100;
+
+  if (edgePct < TOTALS_MIN_EDGE) {
+    betEl.textContent = `Edge ${edgePct.toFixed(1)}% (< ${TOTALS_MIN_EDGE}%)`;
+    betEl.className = 'fw-bold mt-1 text-danger';
+    return;
+  }
+
+  const bet = calcKellyBet(effectiveProb, price);
+
+  if (bet > 0) {
+    const pushNote = push > 0.005 ? ' (push adj.)' : '';
+    betEl.textContent = `Bet $${Math.round(bet)}${pushNote}`;
+    betEl.className = 'fw-bold mt-1 text-success';
+  } else {
+    betEl.textContent = 'No value';
+    betEl.className = 'fw-bold mt-1 text-danger';
+  }
+}
+
+// ── Refresh Starters ──────────────────────────────────────────────────────
+document.addEventListener('click', async function(e) {
+  const btn = e.target.closest('.refresh-starters-btn');
+  if (!btn) return;
+
+  const gameId   = btn.dataset.gameId;
+  const gameDate = btn.dataset.gameDate;   // e.g. "2026-04-04"
+
+  btn.disabled = true;
+  btn.innerHTML = '<span class="spinner-border spinner-border-sm"></span>';
+
+  try {
+    const resp = await fetch(`/games/import?date=${gameDate}`, {
+      headers: { 'Accept': 'application/json' }
+    });
+    const data = await resp.json();
+
+    if (data.imported > 0) {
+      // Starters were updated — reload the page to show them
+      location.reload();
+    } else {
+      btn.innerHTML = '<i class="bi bi-arrow-clockwise"></i> SP';
+      btn.disabled = false;
+      alert('Probable starters not yet posted by MLB — try again later.');
+    }
+  } catch (err) {
+    btn.innerHTML = '<i class="bi bi-arrow-clockwise"></i> SP';
+    btn.disabled = false;
+    alert('Error refreshing starters: ' + err.message);
+  }
+});
+
+// ── Bullpen Availability Modal ─────────────────────────────────────────────
+
+let _bullpenGameId = null;
+let _bullpenData = null;
+
+function renderBullpenModal(data) {
+  function renderTeam(side, label) {
+    const t = data[side];
+    let html = `<h6 class="text-uppercase text-muted small mb-2">${label}</h6>`;
+
+    // Starter — pre-fill with saved value if set, otherwise use stat-derived default
+    const starterVal = t.starter.max_pitches != null ? t.starter.max_pitches : (t.starter.default_pitches || 95);
+    html += `<div class="d-flex align-items-center gap-2 mb-2 p-2 bg-black rounded">
+      <span class="badge bg-primary">SP</span>
+      <span class="flex-grow-1 fw-semibold">${t.starter.name || 'TBD'}</span>
+      <span class="text-muted small">Max pitches:</span>
+      <input type="number" class="form-control form-control-sm bg-dark text-light border-secondary"
+             style="width:70px;" min="1" max="130"
+             id="starter-${side}" value="${starterVal}"
+             title="Auto-calculated from ${t.starter.name || 'pitcher'}'s avg IP/start × 15. Edit to override.">
+    </div>`;
+
+    // Divider + unavailable summary
+    const unavailCount = t.relievers.filter(r => r.pitched_yesterday && !r.available).length;
+    const unavailSummary = unavailCount > 0
+      ? ` <span class="badge bg-danger ms-2">${unavailCount} unavailable</span>`
+      : ' <span class="badge bg-success ms-2">All available</span>';
+    html += `<div class="d-flex align-items-center text-muted small mb-2" style="border-top:1px solid #333; padding-top:6px;">Relievers${unavailSummary}</div>`;
+
+    // Relievers — wrapped in a sortable container
+    html += `<div id="sortable-${side}" class="sortable-list">`;
+    t.relievers.forEach(r => {
+      const pitchedYday = r.pitched_yesterday && !r.available;
+      const rowStyle = pitchedYday
+        ? 'background:rgba(220,53,69,0.12); border:1px solid rgba(220,53,69,0.4); border-radius:6px; padding:4px 6px;'
+        : 'padding:4px 6px;';
+      const nameStyle = pitchedYday ? 'text-decoration:line-through; color:#aaa;' : '';
+      const pitchedBadge = pitchedYday
+        ? `<span class="badge bg-danger ms-1" style="font-size:0.62rem;">🚫 ${r.pitches_yesterday ? r.pitches_yesterday + 'p' : ''} YEST</span>`
+        : '';
+      const disabledAttr = r.available ? '' : 'disabled';
+      html += `<div class="d-flex align-items-center gap-2 mb-1" id="rp-row-${r.player_id}" data-player-id="${r.player_id}" style="${rowStyle}">
+        <span class="drag-handle text-muted" style="cursor:grab; font-size:1rem; line-height:1; user-select:none;" title="Drag to reorder">⠿</span>
+        <div class="form-check form-switch mb-0">
+          <input class="form-check-input" type="checkbox" id="avail-${r.player_id}"
+                 ${r.available ? 'checked' : ''}
+                 onchange="toggleRelief(${r.player_id}, this.checked)">
+        </div>
+        <span class="flex-grow-1 small" style="${nameStyle}">${r.name}${pitchedBadge}</span>
+        <span class="text-muted" style="font-size:0.7rem;">${r.ip ? Math.round(r.ip) + 'IP' : ''}</span>
+        <input type="number" class="form-control form-control-sm bg-dark text-light border-secondary"
+               style="width:65px;" min="1" max="60"
+               id="maxp-${r.player_id}"
+               value="${r.max_pitches != null ? r.max_pitches : (r.default_pitches || 20)}"
+               title="Auto-calculated from avg IP/appearance × 15. Edit to override."
+               ${disabledAttr}>
+      </div>`;
+    });
+    html += `</div>`;  // end sortable-list
+
+    return html;
+  }
+
+  const html = `<div class="row g-3">
+    <div class="col-md-6">${renderTeam('away', data.away.team + ' (Away)')}</div>
+    <div class="col-md-6">${renderTeam('home', data.home.team + ' (Home)')}</div>
+  </div>`;
+
+  // Initialize SortableJS on both lists after a tick (DOM must be ready)
+  setTimeout(() => {
+    ['home', 'away'].forEach(side => {
+      const el = document.getElementById(`sortable-${side}`);
+      if (el && window.Sortable) {
+        Sortable.create(el, {
+          handle: '.drag-handle',
+          animation: 150,
+          ghostClass: 'sortable-ghost',
+        });
+      }
+    });
+  }, 0);
+
+  return html;
+}
+
+function openBullpenModal(gameId, awayAbbr, homeAbbr) {
+  _bullpenGameId = gameId;
+  document.getElementById('bullpenModalTitle').innerHTML =
+    `<i class="bi bi-person-lines-fill"></i> Bullpen — ${awayAbbr} @ ${homeAbbr}`;
+  document.getElementById('bullpenModalBody').innerHTML =
+    '<div class="text-center text-muted py-4"><span class="spinner-border spinner-border-sm"></span> Loading…</div>';
+  document.getElementById('bullpenSaveStatus').textContent = '';
+
+  const modal = new bootstrap.Modal(document.getElementById('bullpenModal'));
+  modal.show();
+
+  fetch(`/api/game/${gameId}/bullpen`)
+    .then(r => r.json())
+    .then(data => {
+      _bullpenData = data;
+      document.getElementById('bullpenModalBody').innerHTML = renderBullpenModal(data);
+    });
+}
+
+function loadYesterday() {
+  if (!_bullpenGameId) return;
+  document.getElementById('bullpenModalBody').innerHTML =
+    '<div class="text-center text-muted py-4"><span class="spinner-border spinner-border-sm"></span> Loading yesterday\'s pitchers…</div>';
+  fetch(`/api/game/${_bullpenGameId}/bullpen/load-yesterday`, { method: 'POST' })
+    .then(r => r.json())
+    .then(data => {
+      if (data.error) {
+        console.error('[bullpen] load-yesterday error:', data.error, data.debug);
+        document.getElementById('bullpenModalBody').innerHTML =
+          `<div class="alert alert-danger m-3"><strong>Error loading yesterday's pitchers:</strong><br>${data.error}<br><pre class="mt-2 small">${(data.debug||[]).join('\n')}</pre></div>`;
+        return;
+      }
+      if (data._debug) console.log('[bullpen] load-yesterday debug:', data._debug);
+      _bullpenData = data;
+      document.getElementById('bullpenModalBody').innerHTML = renderBullpenModal(data);
+      // Count total unavailable across both teams
+      const allRelievers = [...(data.home.relievers || []), ...(data.away.relievers || [])];
+      const outCount = allRelievers.filter(r => r.pitched_yesterday && !r.available).length;
+      const freshCount = allRelievers.filter(r => !r.pitched_yesterday || r.available).length;
+      const statusEl = document.getElementById('bullpenSaveStatus');
+      if (outCount > 0) {
+        statusEl.innerHTML = `<span class="text-danger fw-semibold">🚫 ${outCount} pitcher${outCount > 1 ? 's' : ''} unavailable (pitched yesterday)</span> · <span class="text-success">${freshCount} available</span> · Click Save to apply.`;
+      } else {
+        statusEl.innerHTML = `<span class="text-success">✅ All pitchers available</span> · Click Save to apply.`;
+      }
+    })
+    .catch(err => {
+      console.error('[bullpen] load-yesterday fetch failed:', err);
+      document.getElementById('bullpenModalBody').innerHTML =
+        `<div class="alert alert-danger m-3"><strong>Failed to reach server.</strong> Check the terminal for errors.</div>`;
+    });
+}
+
+function toggleRelief(playerId, available) {
+  const row = document.getElementById(`rp-row-${playerId}`);
+  const input = document.getElementById(`maxp-${playerId}`);
+  if (available) {
+    row.classList.remove('opacity-50');
+    input.disabled = false;
+  } else {
+    row.classList.add('opacity-50');
+    input.disabled = true;
+  }
+}
+
+function saveBullpen() {
+  if (!_bullpenGameId || !_bullpenData) return;
+
+  const relievers = [];
+  ['home', 'away'].forEach(side => {
+    // Read order from current DOM position (drag may have changed it)
+    const container = document.getElementById(`sortable-${side}`);
+    const rows = container ? Array.from(container.querySelectorAll('[data-player-id]')) : [];
+    rows.forEach((row, idx) => {
+      const playerId = parseInt(row.dataset.playerId);
+      const availEl  = document.getElementById(`avail-${playerId}`);
+      const maxpEl   = document.getElementById(`maxp-${playerId}`);
+      if (availEl) {
+        relievers.push({
+          player_id:   playerId,
+          available:   availEl.checked,
+          max_pitches: maxpEl && maxpEl.value ? parseInt(maxpEl.value) : null,
+          sort_order:  idx,
+        });
+      }
+    });
+  });
+
+  const homeMaxP = document.getElementById('starter-home');
+  const awayMaxP = document.getElementById('starter-away');
+
+  fetch(`/api/game/${_bullpenGameId}/bullpen/save`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      home_starter_max_pitches: homeMaxP && homeMaxP.value ? parseInt(homeMaxP.value) : null,
+      away_starter_max_pitches: awayMaxP && awayMaxP.value ? parseInt(awayMaxP.value) : null,
+      relievers,
+    }),
+  })
+  .then(r => r.json())
+  .then(data => {
+    if (data.success) {
+      document.getElementById('bullpenSaveStatus').innerHTML = '<span class="text-success">✓ Saved</span>';
+      setTimeout(() => {
+        bootstrap.Modal.getInstance(document.getElementById('bullpenModal')).hide();
+      }, 800);
+    }
+  });
+}
+</script>
+
+<style>
+.sortable-ghost {
+  opacity: 0.4;
+  background: #1a3a5c !important;
+  border-radius: 4px;
+}
+.drag-handle:active { cursor: grabbing; }
+</style>
+{% endblock %}

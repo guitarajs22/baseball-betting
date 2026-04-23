@@ -1,0 +1,750 @@
+{% extends "base.html" %}
+{% block title %}Bet Tracker{% endblock %}
+
+{% block content %}
+<div class="d-flex justify-content-between align-items-center mb-4">
+  <h4><i class="bi bi-journal-check"></i> Bet Tracker</h4>
+  <div class="d-flex gap-2">
+    <button class="btn btn-success btn-sm" onclick="openManualModal()">
+      <i class="bi bi-plus-circle"></i> Log Bet
+    </button>
+    <a href="{{ url_for('bankroll') }}" class="btn btn-outline-secondary btn-sm">
+      <i class="bi bi-cash-stack"></i> Bankroll
+    </a>
+  </div>
+</div>
+
+<!-- Stats Bar -->
+<div class="row g-3 mb-4">
+
+  <div class="col-6 col-md-3">
+    <div class="stat-card">
+      <div class="stat-label">Record</div>
+      <div class="stat-value">
+        <span class="text-success">{{ wins }}</span><span class="text-muted" style="font-size:18px;"> – </span><span class="text-danger">{{ losses }}</span>
+        {% if pending > 0 %}<span class="text-muted" style="font-size:18px;"> – </span><span style="font-size:18px;">{{ pending }}</span>{% endif %}
+      </div>
+      <div class="stat-sub">W – L{% if pending > 0 %} – Pending{% endif %}</div>
+    </div>
+  </div>
+
+  <div class="col-6 col-md-3">
+    <div class="stat-card">
+      <div class="stat-label">Total P&amp;L</div>
+      <div class="stat-value {% if total_pl > 0 %}text-success{% elif total_pl < 0 %}text-danger{% else %}text-muted{% endif %}">
+        {{ '+' if total_pl > 0 else '' }}${{ "%.2f"|format(total_pl) }}
+      </div>
+      <div class="stat-sub">on graded bets</div>
+    </div>
+  </div>
+
+  <div class="col-6 col-md-3">
+    <div class="stat-card">
+      <div class="stat-label">ROI</div>
+      <div class="stat-value {% if roi > 0 %}text-success{% elif roi < 0 %}text-danger{% else %}text-muted{% endif %}">
+        {{ '+' if roi > 0 else '' }}{{ "%.1f"|format(roi) }}%
+      </div>
+      <div class="stat-sub">${{ "%.0f"|format(total_wagered) }} wagered total</div>
+    </div>
+  </div>
+
+  <div class="col-6 col-md-3">
+    <div class="stat-card">
+      <div class="stat-label">Win Rate</div>
+      <div class="stat-value">
+        {% if (wins + losses) > 0 %}{{ "%.1f"|format(wins / (wins + losses) * 100) }}%{% else %}—{% endif %}
+      </div>
+      <div class="stat-sub">{{ wins + losses }} graded</div>
+    </div>
+  </div>
+
+</div>
+
+<!-- Filter Tabs -->
+<ul class="nav nav-tabs mb-3">
+  {% for f, label in [('placed','All Placed'),('won','Won'),('lost','Lost'),('pending','Pending'),('all','All Recs')] %}
+  <li class="nav-item">
+    <a class="nav-link {% if filter_type == f %}active{% else %}text-muted{% endif %}"
+       href="{{ url_for('bets_page', filter=f) }}">
+      {{ label }}
+      {% if f == 'pending' and pending > 0 %}
+        <span class="badge bg-warning ms-1">{{ pending }}</span>
+      {% endif %}
+    </a>
+  </li>
+  {% endfor %}
+</ul>
+
+<!-- Bets Table -->
+{% if bets %}
+<div class="table-responsive">
+  <table class="table table-hover table-sm align-middle" style="font-size:0.83rem;">
+    <thead class="table-secondary text-dark">
+      <tr>
+        <th>Date</th>
+        <th>Game</th>
+        <th>Type</th>
+        <th>Side</th>
+        <th>Book</th>
+        <th>Price</th>
+        <th>Our %</th>
+        <th>Implied %</th>
+        <th>Edge</th>
+        <th>EV%</th>
+        <th>Wagered</th>
+        <th>Placed?</th>
+        <th>Result</th>
+        <th>P&amp;L</th>
+        <th title="Closing Line Value — positive means you got a better price than where the line closed">CLV</th>
+        <th></th>
+      </tr>
+    </thead>
+    <tbody>
+      {% for bet in bets %}
+      {% set g = games_map.get(bet.game_id) %}
+      {% set is_push = bet.placed and bet.won == none and bet.profit_loss is not none and bet.profit_loss == 0 %}
+      <tr class="
+        {% if bet.won == true %}table-success
+        {% elif bet.won == false %}table-danger
+        {% elif is_push %}{# push — neutral, no highlight #}
+        {% elif bet.placed and bet.won == none %}table-warning
+        {% endif %}">
+
+        <td class="text-muted">
+          <small>{{ bet.created_at.strftime('%m/%d') }}<br>{{ bet.created_at.strftime('%I:%M%p') }}</small>
+        </td>
+
+        <!-- Game link with team names -->
+        <td>
+          <a href="{{ url_for('game_detail', game_id=bet.game_id) }}"
+             class="text-decoration-none fw-bold" style="font-size:0.82rem;">
+            {% if g %}
+              <span style="color:var(--be-blue);">{{ g.away_team.abbreviation if g.away_team else '?' }}</span>
+              <span class="text-muted mx-1" style="font-weight:400;">@</span>
+              <span style="color:var(--be-amber);">{{ g.home_team.abbreviation if g.home_team else '?' }}</span>
+              {% if g.status == 'final' and g.home_score is not none %}
+              <br><span class="text-muted fw-normal" style="font-size:0.75rem;">{{ g.away_score }}–{{ g.home_score }} F</span>
+              {% elif g.status in ['postponed', 'cancelled'] %}
+              <br><span class="text-muted fw-normal fst-italic" style="font-size:0.75rem;">Postponed</span>
+              {% endif %}
+            {% else %}
+              <span class="text-muted">#{{ bet.game_id }}</span>
+            {% endif %}
+          </a>
+        </td>
+
+        <td>
+          {% if bet.bet_type == 'moneyline' %}
+            <span class="pill-ml">ML</span>
+          {% elif 'f5' in (bet.bet_type or '') %}
+            <span class="pill-f5">F5</span>
+          {% elif 'total' in (bet.bet_type or '') %}
+            <span class="pill-totals">O/U</span>
+          {% elif 'runline' in (bet.bet_type or '') %}
+            <span class="pill-rl">RL</span>
+          {% else %}
+            <span class="pill-other">{{ bet.bet_type | replace('_',' ') | upper if bet.bet_type else '—' }}</span>
+          {% endif %}
+          {% if bet.is_manual %}<span class="pill-other ms-1" title="Manually logged">M</span>{% endif %}
+        </td>
+        <td class="fw-bold">
+          {{ bet.side | upper }}
+          {% if bet.notes %}
+          <i class="bi bi-chat-left-text text-muted ms-1" style="font-size:0.7rem;"
+             title="{{ bet.notes }}"></i>
+          {% endif %}
+        </td>
+        <td>
+          <small class="text-muted">
+            {{ bet.bookmaker | replace('_us','') | replace('_',' ') | title if bet.bookmaker else '—' }}
+          </small>
+        </td>
+        <td class="fw-bold {% if bet.price and bet.price > 0 %}text-success{% else %}text-light{% endif %}">
+          {% if bet.price %}{{ '+' if bet.price > 0 else '' }}{{ bet.price }}{% else %}—{% endif %}
+        </td>
+        <td>{% if bet.model_probability %}{{ "%.1f"|format(bet.model_probability * 100) }}%{% else %}<small class="text-muted">—</small>{% endif %}</td>
+        <td>{% if bet.implied_probability %}{{ "%.1f"|format(bet.implied_probability * 100) }}%{% else %}<small class="text-muted">—</small>{% endif %}</td>
+        <td class="fw-bold {% if bet.edge_pct and bet.edge_pct >= 3 %}text-success{% elif bet.edge_pct and bet.edge_pct > 0 %}text-warning{% elif bet.edge_pct and bet.edge_pct < 0 %}text-danger{% else %}text-muted{% endif %}">
+          {% if bet.edge_pct %}{{ '+' if bet.edge_pct > 0 else '' }}{{ "%.1f"|format(bet.edge_pct) }}%{% else %}<small class="text-muted">—</small>{% endif %}
+        </td>
+        <td class="{% if bet.ev_pct and bet.ev_pct > 0 %}text-success{% elif bet.ev_pct and bet.ev_pct < 0 %}text-danger{% else %}text-muted{% endif %}">
+          {% if bet.ev_pct %}{{ '+' if bet.ev_pct > 0 else '' }}{{ "%.1f"|format(bet.ev_pct) }}%{% else %}<small class="text-muted">—</small>{% endif %}
+        </td>
+
+        {# Show actual wagered amount if placed, otherwise recommended #}
+        <td class="fw-bold">
+          {% set display_size = bet.actual_bet_size if bet.actual_bet_size else bet.recommended_bet %}
+          ${{ "%.0f"|format(display_size or 0) }}
+        </td>
+
+        <td class="text-center">
+          {% if bet.placed %}
+            <span class="badge bg-success">Yes</span>
+          {% else %}
+            <span class="text-muted" style="font-size:0.8rem;">No</span>
+          {% endif %}
+        </td>
+
+        <td>
+          {% if bet.won == true %}
+            <span class="result-win"><span class="result-dot"></span>Win</span>
+          {% elif bet.won == false %}
+            <span class="result-loss"><span class="result-dot"></span>Loss</span>
+          {% elif is_push %}
+            <span class="result-push"><span class="result-dot" style="background:var(--be-muted);"></span>Push</span>
+          {% elif g and g.status in ['postponed', 'cancelled'] %}
+            <span class="result-postponed" title="Game postponed">Postponed</span>
+          {% else %}
+            <span class="result-pending">Pending</span>
+          {% endif %}
+        </td>
+
+        <td class="fw-bold
+          {% if bet.profit_loss and bet.profit_loss > 0 %}text-success
+          {% elif bet.profit_loss and bet.profit_loss < 0 %}text-danger
+          {% else %}text-muted{% endif %}">
+          {% if is_push %}
+            <span class="text-muted">$0.00</span>
+          {% elif bet.profit_loss is not none %}
+            {{ '+' if bet.profit_loss > 0 else '' }}${{ "%.2f"|format(bet.profit_loss) }}
+          {% elif bet.placed %}—
+          {% else %}<small>—</small>{% endif %}
+        </td>
+
+        <td class="fw-bold {% if bet.clv_cents and bet.clv_cents > 0 %}text-success{% elif bet.clv_cents and bet.clv_cents < 0 %}text-danger{% else %}text-muted{% endif %}"
+            title="Closing Line Value — did you beat the closing price?">
+          {% if bet.clv_cents is not none %}
+            {{ '+' if bet.clv_cents > 0 else '' }}{{ "%.1f"|format(bet.clv_cents) }}¢
+          {% else %}<small class="text-muted">—</small>{% endif %}
+        </td>
+
+        <td class="text-center">
+          <div class="d-flex gap-1 justify-content-center">
+            <button class="btn btn-outline-secondary btn-sm py-0 px-1"
+                    onclick="openEditModal({{ bet.id }}, {{ bet.actual_bet_size or bet.recommended_bet or 0 }}, {{ bet.price or 0 }}, '{{ bet.bookmaker or '' }}', '{{ bet.notes or '' | replace("'", "\\'") }}', '{{ 'won' if bet.won == true else ('lost' if bet.won == false else ('push' if (bet.profit_loss is not none and bet.profit_loss == 0) else 'pending')) }}', {{ 'true' if bet.is_manual else 'false' }}, '{{ bet.bet_type }}', '{{ bet.side }}', {{ (bet.model_probability * 100) | round(1) if bet.model_probability else 0 }})"
+                    title="Edit bet">
+              <i class="bi bi-pencil" style="font-size:0.75rem;"></i>
+            </button>
+            <button class="btn btn-outline-danger btn-sm py-0 px-1"
+                    onclick="deleteBet({{ bet.id }}, {{ bet.profit_loss or 0 }}, {{ 'true' if bet.won is not none else 'false' }})"
+                    title="Delete bet">
+              <i class="bi bi-trash" style="font-size:0.75rem;"></i>
+            </button>
+          </div>
+        </td>
+
+      </tr>
+      {% endfor %}
+    </tbody>
+
+    <!-- Totals footer row -->
+    {% set pl_bets = bets | selectattr('profit_loss', 'ne', none) | list %}
+    {% if pl_bets %}
+    {% set view_pl = namespace(total=0) %}
+    {% for b in pl_bets %}{% set view_pl.total = view_pl.total + b.profit_loss %}{% endfor %}
+    <tfoot>
+      <tr class="table-secondary text-dark fw-bold">
+        <td colspan="10" class="text-end small">Shown totals:</td>
+        {% set view_wagered = namespace(total=0) %}
+        {% for b in pl_bets %}{% set view_wagered.total = view_wagered.total + ((b.actual_bet_size or b.recommended_bet) or 0) %}{% endfor %}
+        <td>${{ "%.0f"|format(view_wagered.total) }}</td>
+        <td></td>
+        <td>
+          {% set vw = pl_bets | selectattr('won', 'eq', true) | list | length %}
+          {% set vl = pl_bets | selectattr('won', 'eq', false) | list | length %}
+          {{ vw }}W–{{ vl }}L
+        </td>
+        <td class="{% if view_pl.total > 0 %}text-success{% else %}text-danger{% endif %}">
+          {{ '+' if view_pl.total > 0 else '' }}${{ "%.2f"|format(view_pl.total) }}
+        </td>
+        <td></td>
+      </tr>
+    </tfoot>
+    {% endif %}
+
+  </table>
+</div>
+
+{% else %}
+<div class="alert alert-secondary mt-3">
+  {% if filter_type == 'placed' %}
+    No placed bets yet. Go to a game's detail page and click "No" next to any recommendation to mark it as placed.
+  {% elif filter_type == 'won' %}
+    No winning bets recorded yet.
+  {% elif filter_type == 'lost' %}
+    No losing bets recorded yet.
+  {% elif filter_type == 'pending' %}
+    All placed bets have been graded — nothing pending.
+  {% else %}
+    No bet recommendations yet. Enter lineups and run simulations to generate picks.
+  {% endif %}
+</div>
+{% endif %}
+
+<!-- ── Log Manual Bet Modal ──────────────────────────────────────────── -->
+<div class="modal fade" id="manualBetModal" tabindex="-1">
+  <div class="modal-dialog modal-dialog-centered">
+    <div class="modal-content">
+      <div class="modal-header">
+        <h5 class="modal-title text-success"><i class="bi bi-plus-circle"></i> Log a Bet</h5>
+        <button type="button" class="btn-close" data-bs-dismiss="modal"></button>
+      </div>
+      <div class="modal-body">
+        <div class="mb-3">
+          <label class="form-label text-muted small">Game</label>
+          <select id="mb-game" class="form-select form-select-sm bg-dark text-light border-secondary">
+            <option value="">— select game —</option>
+            {% for g in manual_games %}
+            <option value="{{ g.id }}">
+              {{ g.game_date.strftime('%m/%d') }} —
+              {{ g.away_team.abbreviation if g.away_team else '?' }} @
+              {{ g.home_team.abbreviation if g.home_team else '?' }}
+              {% if g.status == 'final' %} (F: {{ g.away_score }}–{{ g.home_score }}){% endif %}
+            </option>
+            {% endfor %}
+          </select>
+        </div>
+        <div class="mb-3">
+          <label class="form-label text-muted small">Bet Type</label>
+          <select id="mb-type" class="form-select form-select-sm bg-dark text-light border-secondary"
+                  onchange="updateSideInputs()">
+            <option value="moneyline">Moneyline</option>
+            <option value="runline">Runline (-1.5 / +1.5)</option>
+            <option value="totals">Total (Over / Under)</option>
+            <option value="first_inning">First Inning (RIFI / NRFI)</option>
+            <option value="prop">Player Prop</option>
+            <option value="other">Other</option>
+          </select>
+        </div>
+
+        <!-- Dynamic side inputs — swapped by updateSideInputs() -->
+        <div id="mb-side-wrap" class="mb-3">
+          <!-- Moneyline (default) -->
+          <div id="mb-side-ml">
+            <label class="form-label text-muted small">Team / Side</label>
+            <input type="text" id="mb-side-ml-val" class="form-control form-control-sm bg-dark text-light border-secondary"
+                   placeholder="e.g. NYY, SF, Away team">
+          </div>
+
+          <!-- Total (Over/Under + line) -->
+          <div id="mb-side-totals" class="d-none">
+            <label class="form-label text-muted small">Side &amp; Line</label>
+            <div class="input-group input-group-sm">
+              <select id="mb-side-ou" class="form-select bg-dark text-light border-secondary" style="max-width:110px;">
+                <option value="over">Over</option>
+                <option value="under">Under</option>
+              </select>
+              <input type="number" id="mb-side-line" class="form-control bg-dark text-light border-secondary"
+                     placeholder="8.5" step="0.5" min="0">
+            </div>
+          </div>
+
+          <!-- Runline -->
+          <div id="mb-side-rl" class="d-none">
+            <label class="form-label text-muted small">Team &amp; Spread</label>
+            <div class="input-group input-group-sm">
+              <input type="text" id="mb-side-rl-team" class="form-control bg-dark text-light border-secondary"
+                     placeholder="e.g. NYY" style="max-width:90px;">
+              <select id="mb-side-rl-spread" class="form-select bg-dark text-light border-secondary">
+                <option value="-1.5">-1.5 (favorite)</option>
+                <option value="+1.5">+1.5 (underdog)</option>
+              </select>
+            </div>
+          </div>
+
+          <!-- First Inning -->
+          <div id="mb-side-fi" class="d-none">
+            <label class="form-label text-muted small">First Inning Pick</label>
+            <select id="mb-side-fi-val" class="form-select form-select-sm bg-dark text-light border-secondary">
+              <option value="rifi">RIFI — Yes, a run will score</option>
+              <option value="nrfi">NRFI — No, scoreless first</option>
+            </select>
+          </div>
+
+          <!-- Prop / Other -->
+          <div id="mb-side-other" class="d-none">
+            <label class="form-label text-muted small">Describe the bet</label>
+            <input type="text" id="mb-side-other-val" class="form-control form-control-sm bg-dark text-light border-secondary"
+                   placeholder="e.g. Mike Trout Over 0.5 hits">
+          </div>
+        </div>
+        <div class="row g-2 mb-3">
+          <div class="col-6">
+            <label class="form-label text-muted small">Book</label>
+            <select id="mb-book" class="form-select form-select-sm bg-dark text-light border-secondary"
+                    onchange="toggleOtherBook(this)">
+              <option value="betmgm">BetMGM</option>
+              <option value="caesars">Caesars</option>
+              <option value="draftkings">DraftKings</option>
+              <option value="fanduel">FanDuel</option>
+              <option value="pointsbet">PointsBet</option>
+              <option value="other">Other…</option>
+            </select>
+            <input type="text" id="mb-book-other" class="form-control form-control-sm bg-dark text-light border-secondary mt-1 d-none"
+                   placeholder="Book name">
+          </div>
+          <div class="col-6">
+            <label class="form-label text-muted small">Odds (American)</label>
+            <input type="number" id="mb-price" class="form-control form-control-sm bg-dark text-light border-secondary"
+                   placeholder="-110" step="1">
+          </div>
+        </div>
+        <div class="row g-2 mb-3">
+          <div class="col-6">
+            <label class="form-label text-muted small">Amount Wagered ($)</label>
+            <input type="number" id="mb-amount" class="form-control form-control-sm bg-dark text-light border-secondary"
+                   placeholder="25" min="1" step="1">
+          </div>
+          <div class="col-6">
+            <label class="form-label text-muted small">Result <span class="text-muted" style="font-size:0.7rem;">(optional)</span></label>
+            <select id="mb-result" class="form-select form-select-sm bg-dark text-light border-secondary">
+              <option value="pending">Pending</option>
+              <option value="won">Won</option>
+              <option value="lost">Lost</option>
+              <option value="push">Push (money back)</option>
+            </select>
+          </div>
+        </div>
+        <div class="mb-2">
+          <label class="form-label text-muted small">Notes <span class="text-muted" style="font-size:0.7rem;">(optional)</span></label>
+          <input type="text" id="mb-notes" class="form-control form-control-sm bg-dark text-light border-secondary"
+                 placeholder="e.g. caught a line move, sharp action, etc." maxlength="400">
+        </div>
+        <div id="mb-status" class="text-danger small mt-2"></div>
+      </div>
+      <div class="modal-footer">
+        <button type="button" class="btn btn-secondary btn-sm" data-bs-dismiss="modal">Cancel</button>
+        <button type="button" class="btn btn-success btn-sm" onclick="submitManualBet()">
+          <i class="bi bi-floppy-fill"></i> Save Bet
+        </button>
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- ── Edit Bet Modal ────────────────────────────────────────────────── -->
+<div class="modal fade" id="editBetModal" tabindex="-1">
+  <div class="modal-dialog modal-dialog-centered">
+    <div class="modal-content">
+      <div class="modal-header">
+        <h5 class="modal-title text-warning"><i class="bi bi-pencil"></i> Edit Bet</h5>
+        <button type="button" class="btn-close" data-bs-dismiss="modal"></button>
+      </div>
+      <div class="modal-body">
+        <input type="hidden" id="eb-id">
+        <!-- Manual-only fields (hidden for model recs) -->
+        <div id="eb-manual-fields" class="d-none">
+          <div class="row g-2 mb-3">
+            <div class="col-6">
+              <label class="form-label text-muted small">Bet Type</label>
+              <select id="eb-type" class="form-select form-select-sm bg-dark text-light border-secondary">
+                <option value="moneyline">Moneyline</option>
+                <option value="runline">Runline</option>
+                <option value="totals">Total (O/U)</option>
+                <option value="first_inning">First Inning</option>
+                <option value="prop">Player Prop</option>
+                <option value="other">Other</option>
+              </select>
+            </div>
+            <div class="col-6">
+              <label class="form-label text-muted small">Side / Pick</label>
+              <input type="text" id="eb-side" class="form-control form-control-sm bg-dark text-light border-secondary"
+                     placeholder="e.g. NYY, Over">
+            </div>
+          </div>
+        </div>
+        <div class="row g-2 mb-3">
+          <div class="col-6">
+            <label class="form-label text-muted small">Amount Wagered ($)</label>
+            <input type="number" id="eb-amount" class="form-control form-control-sm bg-dark text-light border-secondary"
+                   placeholder="25" min="1" step="1">
+          </div>
+          <div class="col-6">
+            <label class="form-label text-muted small">Odds (American)</label>
+            <input type="number" id="eb-price" class="form-control form-control-sm bg-dark text-light border-secondary"
+                   placeholder="-110" step="1" oninput="updateEdgePreview()">
+          </div>
+        </div>
+        <div class="row g-2 mb-3">
+          <div class="col-4">
+            <label class="form-label text-muted small">Model % <span class="text-muted" style="font-size:0.65rem;">(our win prob)</span></label>
+            <div class="input-group input-group-sm">
+              <input type="number" id="eb-model-pct" class="form-control bg-dark text-light border-secondary"
+                     placeholder="55.0" min="1" max="99" step="0.1"
+                     oninput="updateEdgePreview()">
+              <span class="input-group-text bg-secondary text-light border-secondary">%</span>
+            </div>
+          </div>
+          <div class="col-8">
+            <label class="form-label text-muted small">Calculated from Model %</label>
+            <div class="d-flex gap-3 align-items-center" style="height:31px;">
+              <span class="small text-muted">Edge: <span id="eb-edge-preview" class="fw-bold text-light">—</span></span>
+              <span class="small text-muted">EV: <span id="eb-ev-preview" class="fw-bold text-light">—</span></span>
+              <span class="small text-muted">Implied: <span id="eb-impl-preview" class="text-light">—</span></span>
+            </div>
+          </div>
+        </div>
+        <div class="row g-2 mb-3">
+          <div class="col-6">
+            <label class="form-label text-muted small">Book</label>
+            <input type="text" id="eb-book" class="form-control form-control-sm bg-dark text-light border-secondary"
+                   placeholder="BetMGM, Caesars, etc.">
+          </div>
+          <div class="col-6">
+            <label class="form-label text-muted small">Result</label>
+            <select id="eb-result" class="form-select form-select-sm bg-dark text-light border-secondary">
+              <option value="pending">Pending</option>
+              <option value="won">Won ✓</option>
+              <option value="lost">Lost ✗</option>
+              <option value="push">Push ↔ (money back)</option>
+            </select>
+          </div>
+        </div>
+        <div class="mb-2">
+          <label class="form-label text-muted small">Notes</label>
+          <input type="text" id="eb-notes" class="form-control form-control-sm bg-dark text-light border-secondary"
+                 placeholder="Optional note" maxlength="400">
+        </div>
+        <div id="eb-status" class="text-danger small mt-2"></div>
+      </div>
+      <div class="modal-footer">
+        <button type="button" class="btn btn-secondary btn-sm" data-bs-dismiss="modal">Cancel</button>
+        <button type="button" class="btn btn-warning btn-sm" onclick="submitEditBet()">
+          <i class="bi bi-floppy-fill"></i> Save Changes
+        </button>
+      </div>
+    </div>
+  </div>
+</div>
+
+{% block scripts %}
+<script>
+// ── Manual Bet Modal ─────────────────────────────────────────────────────────
+const MB_SIDE_IDS = ['mb-side-ml','mb-side-totals','mb-side-rl','mb-side-fi','mb-side-other'];
+
+function updateSideInputs() {
+  const type = document.getElementById('mb-type').value;
+  MB_SIDE_IDS.forEach(id => document.getElementById(id).classList.add('d-none'));
+  const map = {
+    moneyline:    'mb-side-ml',
+    runline:      'mb-side-rl',
+    totals:       'mb-side-totals',
+    first_inning: 'mb-side-fi',
+    prop:         'mb-side-other',
+    other:        'mb-side-other',
+  };
+  document.getElementById(map[type] || 'mb-side-ml').classList.remove('d-none');
+}
+
+function getMbSide() {
+  const type = document.getElementById('mb-type').value;
+  if (type === 'moneyline')    return document.getElementById('mb-side-ml-val').value.trim();
+  if (type === 'totals') {
+    const ou   = document.getElementById('mb-side-ou').value;
+    const line = document.getElementById('mb-side-line').value.trim();
+    return line ? `${ou} ${line}` : ou;
+  }
+  if (type === 'runline') {
+    const team   = document.getElementById('mb-side-rl-team').value.trim();
+    const spread = document.getElementById('mb-side-rl-spread').value;
+    return team ? `${team} ${spread}` : spread;
+  }
+  if (type === 'first_inning') return document.getElementById('mb-side-fi-val').value;
+  return document.getElementById('mb-side-other-val').value.trim();
+}
+
+function openManualModal() {
+  document.getElementById('mb-game').value         = '';
+  document.getElementById('mb-type').value         = 'moneyline';
+  document.getElementById('mb-side-ml-val').value  = '';
+  document.getElementById('mb-side-ou').value      = 'over';
+  document.getElementById('mb-side-line').value    = '';
+  document.getElementById('mb-side-rl-team').value = '';
+  document.getElementById('mb-side-rl-spread').value = '-1.5';
+  document.getElementById('mb-side-fi-val').value  = 'rifi';
+  document.getElementById('mb-side-other-val').value = '';
+  document.getElementById('mb-book').value         = 'betmgm';
+  document.getElementById('mb-book-other').classList.add('d-none');
+  document.getElementById('mb-book-other').value   = '';
+  document.getElementById('mb-price').value        = '';
+  document.getElementById('mb-amount').value       = '';
+  document.getElementById('mb-result').value       = 'pending';
+  document.getElementById('mb-notes').value        = '';
+  document.getElementById('mb-status').textContent = '';
+  updateSideInputs();
+  new bootstrap.Modal(document.getElementById('manualBetModal')).show();
+}
+
+function toggleOtherBook(sel) {
+  const other = document.getElementById('mb-book-other');
+  if (sel.value === 'other') {
+    other.classList.remove('d-none');
+    other.focus();
+  } else {
+    other.classList.add('d-none');
+  }
+}
+
+function submitManualBet() {
+  const gameId = document.getElementById('mb-game').value;
+  const side   = getMbSide();
+  const price  = document.getElementById('mb-price').value;
+  const amount = document.getElementById('mb-amount').value;
+  const status = document.getElementById('mb-status');
+  const type   = document.getElementById('mb-type').value;
+
+  if (!gameId) { status.textContent = 'Please select a game.'; return; }
+  if (!side)   { status.textContent = 'Please fill in the side / pick.'; return; }
+  if (type === 'totals' && !document.getElementById('mb-side-line').value.trim()) {
+    status.textContent = 'Please enter the total line number (e.g. 8.5).'; return;
+  }
+  if (!price)  { status.textContent = 'Please enter the odds.'; return; }
+  if (!amount) { status.textContent = 'Please enter the amount wagered.'; return; }
+
+  const bookSel = document.getElementById('mb-book').value;
+  const book    = bookSel === 'other'
+    ? document.getElementById('mb-book-other').value.trim()
+    : bookSel;
+
+  fetch('/bet/manual', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      game_id:         parseInt(gameId),
+      bet_type:        type,
+      side,
+      bookmaker:       book,
+      price:           parseInt(price),
+      actual_bet_size: parseFloat(amount),
+      won:             document.getElementById('mb-result').value,
+      notes:           document.getElementById('mb-notes').value.trim(),
+    }),
+  })
+  .then(r => r.json())
+  .then(data => {
+    if (data.success) {
+      bootstrap.Modal.getInstance(document.getElementById('manualBetModal')).hide();
+      location.reload();
+    } else {
+      status.textContent = data.error || 'Error saving bet.';
+    }
+  });
+}
+
+// ── Edit Bet Modal ────────────────────────────────────────────────────────────
+function americanToImplied(price) {
+  // Returns implied probability as a percentage (e.g. 52.4 for -110)
+  if (!price) return null;
+  return price < 0
+    ? (-price / (-price + 100)) * 100
+    : (100 / (price + 100)) * 100;
+}
+
+function updateEdgePreview() {
+  const modelPct = parseFloat(document.getElementById('eb-model-pct').value);
+  const price    = parseInt(document.getElementById('eb-price').value);
+
+  if (!modelPct || !price) {
+    document.getElementById('eb-edge-preview').textContent = '—';
+    document.getElementById('eb-ev-preview').textContent   = '—';
+    document.getElementById('eb-impl-preview').textContent = '—';
+    return;
+  }
+
+  const impliedPct = americanToImplied(price);
+  const edge       = modelPct - impliedPct;
+  const decimalOdds = price > 0 ? (price / 100) + 1 : (100 / -price) + 1;
+  const ev         = (modelPct / 100) * (decimalOdds - 1) * 100 - ((1 - modelPct / 100)) * 100;
+
+  const edgeEl = document.getElementById('eb-edge-preview');
+  const evEl   = document.getElementById('eb-ev-preview');
+  edgeEl.textContent = (edge >= 0 ? '+' : '') + edge.toFixed(1) + '%';
+  edgeEl.className   = 'fw-bold ' + (edge >= 3 ? 'text-success' : edge > 0 ? 'text-warning' : 'text-danger');
+  evEl.textContent   = (ev >= 0 ? '+' : '') + ev.toFixed(1) + '%';
+  evEl.className     = 'fw-bold ' + (ev > 0 ? 'text-success' : 'text-danger');
+  document.getElementById('eb-impl-preview').textContent = impliedPct.toFixed(1) + '%';
+}
+
+function openEditModal(id, amount, price, book, notes, result, isManual, betType, side, modelPct) {
+  document.getElementById('eb-id').value        = id;
+  document.getElementById('eb-amount').value    = amount || '';
+  document.getElementById('eb-price').value     = price  || '';
+  document.getElementById('eb-book').value      = book   || '';
+  document.getElementById('eb-notes').value     = notes  || '';
+  document.getElementById('eb-result').value    = result || 'pending';
+  document.getElementById('eb-model-pct').value = modelPct || '';
+  document.getElementById('eb-status').textContent = '';
+  updateEdgePreview();
+
+  const manualFields = document.getElementById('eb-manual-fields');
+  if (isManual) {
+    manualFields.classList.remove('d-none');
+    document.getElementById('eb-type').value = betType || 'moneyline';
+    document.getElementById('eb-side').value = side    || '';
+  } else {
+    manualFields.classList.add('d-none');
+  }
+
+  new bootstrap.Modal(document.getElementById('editBetModal')).show();
+}
+
+function submitEditBet() {
+  const id     = document.getElementById('eb-id').value;
+  const status = document.getElementById('eb-status');
+  const isManual = !document.getElementById('eb-manual-fields').classList.contains('d-none');
+  const modelPct = parseFloat(document.getElementById('eb-model-pct').value);
+
+  const payload = {
+    actual_bet_size:   parseFloat(document.getElementById('eb-amount').value) || null,
+    price:             parseInt(document.getElementById('eb-price').value)    || null,
+    bookmaker:         document.getElementById('eb-book').value.trim(),
+    notes:             document.getElementById('eb-notes').value.trim(),
+    won:               document.getElementById('eb-result').value,
+    model_probability: modelPct || null,
+  };
+
+  if (isManual) {
+    payload.bet_type = document.getElementById('eb-type').value;
+    payload.side     = document.getElementById('eb-side').value.trim();
+  }
+
+  fetch(`/bet/${id}/edit`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(payload),
+  })
+  .then(r => r.json())
+  .then(data => {
+    if (data.success) {
+      bootstrap.Modal.getInstance(document.getElementById('editBetModal')).hide();
+      location.reload();
+    } else {
+      status.textContent = data.error || 'Error saving changes.';
+    }
+  });
+}
+
+function deleteBet(betId, profitLoss, isGraded) {
+  let msg = 'Delete this bet? This cannot be undone.';
+  if (isGraded && profitLoss !== 0) {
+    const pl    = profitLoss > 0 ? `+$${profitLoss.toFixed(2)}` : `-$${Math.abs(profitLoss).toFixed(2)}`;
+    const rev   = profitLoss > 0 ? `-$${profitLoss.toFixed(2)}` : `+$${Math.abs(profitLoss).toFixed(2)}`;
+    msg = `This bet was graded (${pl} P&L). Deleting it will add a ${rev} reversal to your bankroll log to keep your balance accurate.\n\nDelete anyway?`;
+  }
+  if (!confirm(msg)) return;
+
+  fetch(`/bet/${betId}/delete`, { method: 'POST' })
+    .then(r => r.json())
+    .then(data => {
+      if (data.success) {
+        location.reload();
+      } else {
+        alert(data.error || 'Could not delete bet.');
+      }
+    })
+    .catch(() => alert('Network error — could not delete bet.'));
+}
+</script>
+{% endblock %}
+
+{% endblock %}

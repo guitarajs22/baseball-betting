@@ -1,0 +1,113 @@
+{% extends "base.html" %}
+{% block title %}Settings{% endblock %}
+
+{% block content %}
+<div class="d-flex justify-content-between align-items-center mb-4">
+  <h4><i class="bi bi-gear-fill text-secondary me-2"></i>Settings</h4>
+</div>
+
+{% if message %}
+<div class="alert alert-{{ message[0] }} py-2 mb-4">{{ message[1] }}</div>
+{% endif %}
+
+<div class="row g-4">
+
+  <!-- Betting Thresholds -->
+  <div class="col-lg-6">
+    <div class="card bg-black border-secondary">
+      <div class="card-header text-muted text-uppercase small">
+        <i class="bi bi-sliders"></i> Betting Thresholds
+      </div>
+      <div class="card-body">
+        <form method="POST" action="{{ url_for('settings_page') }}">
+
+          <div class="mb-4">
+            <label class="form-label fw-semibold text-light">
+              Minimum Edge %
+            </label>
+            <div class="input-group" style="max-width:220px;">
+              <input type="number" name="min_edge_pct" id="minEdgePct"
+                     class="form-control bg-dark text-light border-secondary"
+                     value="{{ current.min_edge_pct }}" step="0.5" min="0.5" max="25">
+              <span class="input-group-text bg-black text-muted border-secondary">%</span>
+            </div>
+            <div class="form-text text-muted mt-1">
+              The minimum edge your simulation must show over the book's implied
+              probability before a bet is recommended. The threshold odds shown
+              on each game are calculated from this number.
+              <br>
+              <strong class="text-warning">Default: 6%.</strong>
+              Raising this gives fewer but higher-confidence picks.
+              Lowering it gives more picks but more noise.
+            </div>
+          </div>
+
+          <div class="mb-4">
+            <label class="form-label fw-semibold text-light">
+              Kelly Fraction
+            </label>
+            <div class="input-group" style="max-width:220px;">
+              <input type="number" name="kelly_fraction" id="kellyFraction"
+                     class="form-control bg-dark text-light border-secondary"
+                     value="{{ current.kelly_fraction }}" step="0.05" min="0.05" max="1.0">
+              <span class="input-group-text bg-black text-muted border-secondary">× full Kelly</span>
+            </div>
+            <div class="form-text text-muted mt-1">
+              Fraction of the full Kelly bet to use. Full Kelly (1.0) maximises
+              long-run growth but has high variance.
+              <br>
+              <strong class="text-warning">Default: 0.25 (quarter Kelly)</strong> — a
+              conservative approach that limits drawdown while still growing the bankroll.
+            </div>
+          </div>
+
+          <button type="submit" class="btn btn-success">
+            <i class="bi bi-check-lg"></i> Save Settings
+          </button>
+          <span class="text-muted small ms-3">
+            Re-simulate today's games after saving to apply new thresholds.
+          </span>
+        </form>
+      </div>
+    </div>
+  </div>
+
+  <!-- How Threshold Odds Work -->
+  <div class="col-lg-6">
+    <div class="card bg-black border-secondary">
+      <div class="card-header text-muted text-uppercase small">
+        <i class="bi bi-info-circle"></i> How "Bet At" Prices Work
+      </div>
+      <div class="card-body text-muted small" style="line-height:1.8;">
+        <p>
+          After every simulation the app converts each win probability into a
+          <strong class="text-light">threshold price</strong> — the worst odds you
+          should accept to still have your configured edge.
+        </p>
+        <p>
+          <strong class="text-light">Example:</strong> The sim says the Under hits
+          55% of the time. With a 6% edge requirement, you need the book to imply
+          ≤49% — which is <strong class="text-success">+104 or better</strong>.
+          If the book is offering -108, that's only implied 52%,
+          so you'd pass.
+        </p>
+        <p>
+          <strong class="text-light">"Or better"</strong> always means a more
+          favourable price for you:
+        </p>
+        <ul>
+          <li>Underdog bets: a higher positive number (+120 is better than +104)</li>
+          <li>Favourite bets: a less negative number (-108 is better than -115)</li>
+        </ul>
+        <p class="mb-0">
+          The <strong class="text-warning">Kelly Bet</strong> shown is the dollar
+          amount the Kelly Criterion suggests wagering based on your current
+          bankroll and the edge on offer. Sticking to the suggested sizes keeps
+          risk of ruin very low even over a long season.
+        </p>
+      </div>
+    </div>
+  </div>
+
+</div>
+{% endblock %}

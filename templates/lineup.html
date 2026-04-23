@@ -1,0 +1,295 @@
+{% extends "base.html" %}
+{% block title %}Edit Lineup — {{ game.away_team.abbreviation if game.away_team else '?' }} @ {{ game.home_team.abbreviation if game.home_team else '?' }}{% endblock %}
+
+{% block content %}
+<div class="d-flex justify-content-between align-items-center mb-4">
+  <h4>
+    <i class="bi bi-pencil-square"></i>
+    Edit Lineup —
+    <span class="text-info">{{ game.away_team.name if game.away_team else 'Away' }}</span>
+    <span class="mx-1">@</span>
+    <span class="text-warning">{{ game.home_team.name if game.home_team else 'Home' }}</span>
+    <small class="text-muted ms-2">{{ game.game_date.strftime('%B %d, %Y') }}</small>
+  </h4>
+  <a href="{{ url_for('game_detail', game_id=game.id) }}" class="btn btn-outline-secondary btn-sm">← Back to Game</a>
+</div>
+
+<form method="POST" action="{{ url_for('edit_lineup', game_id=game.id) }}">
+  <div class="row g-4">
+
+    <!-- Starters & Weather -->
+    <div class="col-12">
+      <div class="card bg-black border-secondary">
+        <div class="card-header d-flex justify-content-between align-items-center text-uppercase small">
+          <span>Starters &amp; Weather</span>
+          <button type="button" class="btn btn-sm btn-outline-info" onclick="fetchWeather()" id="weatherBtn">
+            <i class="bi bi-cloud-sun"></i> Fetch Current Weather
+          </button>
+        </div>
+        <div class="card-body">
+
+          <!-- Weather status message -->
+          <div id="weatherStatus" class="alert alert-info py-2 small mb-3 d-none"></div>
+
+          <div class="row g-3">
+
+            <div class="col-md-3">
+              <label class="form-label small">Away Starter — {{ game.away_team.abbreviation if game.away_team else '' }}</label>
+              <select name="away_starter_id" class="form-select bg-dark text-light border-secondary">
+                <option value="">-- TBD --</option>
+                {% for p in away_pitchers %}
+                <option value="{{ p.id }}" {% if game.away_starter_id == p.id %}selected{% endif %}>
+                  {{ p.name | last_first }}
+                </option>
+                {% endfor %}
+              </select>
+            </div>
+
+            <div class="col-md-3">
+              <label class="form-label small">Home Starter — {{ game.home_team.abbreviation if game.home_team else '' }}</label>
+              <select name="home_starter_id" class="form-select bg-dark text-light border-secondary">
+                <option value="">-- TBD --</option>
+                {% for p in home_pitchers %}
+                <option value="{{ p.id }}" {% if game.home_starter_id == p.id %}selected{% endif %}>
+                  {{ p.name | last_first }}
+                </option>
+                {% endfor %}
+              </select>
+            </div>
+
+            <div class="col-md-1">
+              <label class="form-label small">Temp (°F)</label>
+              <input type="number" id="temperature_f" name="temperature_f"
+                     class="form-control bg-dark text-light border-secondary"
+                     placeholder="72" min="30" max="110"
+                     value="{{ game.temperature_f | int if game.temperature_f else '' }}">
+            </div>
+            <div class="col-md-1">
+              <label class="form-label small">Wind (mph)</label>
+              <input type="number" id="wind_speed_mph" name="wind_speed_mph"
+                     class="form-control bg-dark text-light border-secondary"
+                     placeholder="0" min="0" max="40"
+                     value="{{ game.wind_speed_mph | int if game.wind_speed_mph else '' }}">
+            </div>
+            <div class="col-md-2">
+              <label class="form-label small">
+                Wind Direction
+                <span id="windCompass" class="text-info fw-bold ms-1"></span>
+              </label>
+              <select id="wind_direction" name="wind_direction"
+                      class="form-select bg-dark text-light border-secondary">
+                <option value="">-- Select --</option>
+                {% for d in ['Out to CF','Out to LF','Out to RF','In from CF','In from LF','In from RF','Calm / Variable'] %}
+                <option {% if game.wind_direction == d %}selected{% endif %}>{{ d }}</option>
+                {% endfor %}
+              </select>
+              <div id="windHint" class="text-muted" style="font-size:0.72rem;margin-top:2px;display:none;">
+                Wind from <span id="windFrom"></span> — pick direction above
+              </div>
+            </div>
+            <div class="col-md-1">
+              <label class="form-label small">Humidity (%)</label>
+              <input type="number" id="humidity_pct" name="humidity_pct"
+                     class="form-control bg-dark text-light border-secondary"
+                     placeholder="50" min="0" max="100"
+                     value="{{ game.humidity_pct | int if game.humidity_pct else '' }}">
+            </div>
+            <div class="col-md-1">
+              <label class="form-label small">Pressure (inHg)</label>
+              <input type="number" id="pressure_inhg" name="pressure_inhg"
+                     class="form-control bg-dark text-light border-secondary"
+                     placeholder="29.92" step="0.01"
+                     value="{{ '%.2f'|format(game.pressure_inhg) if game.pressure_inhg else '' }}">
+            </div>
+
+            <div class="col-md-2">
+              <label class="form-label small">
+                <i class="bi bi-person-badge"></i> Home Plate Umpire
+              </label>
+              <select name="umpire_id" class="form-select bg-dark text-light border-secondary form-select-sm">
+                <option value="">-- Not Assigned --</option>
+                {% for u in all_umpires %}
+                <option value="{{ u.id }}"
+                  {% if game.umpire_id == u.id %}selected{% endif %}
+                  title="Walks {{ '+' if (u.walk_rate_impact or 0) > 0 else '' }}{{ '%.0f'|format((u.walk_rate_impact or 0)*100) }}%  Ks {{ '+' if (u.k_rate_impact or 0) > 0 else '' }}{{ '%.0f'|format((u.k_rate_impact or 0)*100) }}%">
+                  {{ u.name }}
+                </option>
+                {% endfor %}
+              </select>
+              {% if game.umpire_id %}
+              {% for u in all_umpires %}{% if u.id == game.umpire_id %}
+              <div class="text-muted mt-1" style="font-size:0.72rem;">
+                Runs {{ '+' if (u.runs_per_game_impact or 0) > 0 else '' }}{{ '%.2f'|format(u.runs_per_game_impact or 0) }}/gm &nbsp;|&nbsp;
+                Walks {{ '+' if (u.walk_rate_impact or 0) > 0 else '' }}{{ '%.0f'|format((u.walk_rate_impact or 0)*100) }}%
+              </div>
+              {% endif %}{% endfor %}
+              {% endif %}
+            </div>
+
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- Away Lineup -->
+    <div class="col-md-6">
+      <div class="card bg-black border-info">
+        <div class="card-header text-info text-uppercase small">
+          Away Lineup — {{ game.away_team.name if game.away_team else 'Away' }}
+        </div>
+        <div class="card-body">
+          {% for i in range(1, 10) %}
+          {% set current_pid = away_lineup.get(i) %}
+          <div class="d-flex align-items-center mb-2 gap-2">
+            <span class="text-muted fw-bold" style="width:22px;font-size:0.85rem">{{ i }}.</span>
+            <select name="away_batter_{{ i }}" id="awayBatter{{ i }}"
+                    class="form-select bg-dark text-light border-secondary form-select-sm"
+                    onchange="syncDuplicates('away')">
+              <option value="">— Select Player —</option>
+              {% for p in away_batters %}
+              <option value="{{ p.id }}" {% if current_pid == p.id %}selected{% endif %}>
+                {{ p.name | last_first }} ({{ p.position or '?' }}){% if p.id in wrc_map %} · wRC+ {{ wrc_map[p.id] }}{% endif %}
+              </option>
+              {% endfor %}
+            </select>
+          </div>
+          {% endfor %}
+        </div>
+      </div>
+    </div>
+
+    <!-- Home Lineup -->
+    <div class="col-md-6">
+      <div class="card bg-black border-warning">
+        <div class="card-header text-warning text-uppercase small">
+          Home Lineup — {{ game.home_team.name if game.home_team else 'Home' }}
+        </div>
+        <div class="card-body">
+          {% for i in range(1, 10) %}
+          {% set current_pid = home_lineup.get(i) %}
+          <div class="d-flex align-items-center mb-2 gap-2">
+            <span class="text-muted fw-bold" style="width:22px;font-size:0.85rem">{{ i }}.</span>
+            <select name="home_batter_{{ i }}" id="homeBatter{{ i }}"
+                    class="form-select bg-dark text-light border-secondary form-select-sm"
+                    onchange="syncDuplicates('home')">
+              <option value="">— Select Player —</option>
+              {% for p in home_batters %}
+              <option value="{{ p.id }}" {% if current_pid == p.id %}selected{% endif %}>
+                {{ p.name | last_first }} ({{ p.position or '?' }}){% if p.id in wrc_map %} · wRC+ {{ wrc_map[p.id] }}{% endif %}
+              </option>
+              {% endfor %}
+            </select>
+          </div>
+          {% endfor %}
+        </div>
+      </div>
+    </div>
+
+    <!-- Submit -->
+    <div class="col-12 d-flex justify-content-center gap-3">
+      <button type="submit" class="btn btn-success btn-lg px-5">
+        <i class="bi bi-save"></i> Save Lineup
+      </button>
+      <a href="{{ url_for('game_detail', game_id=game.id) }}" class="btn btn-outline-secondary btn-lg">
+        Cancel
+      </a>
+    </div>
+
+  </div>
+</form>
+{% endblock %}
+
+{% block scripts %}
+<script>
+// Prevent the same player from appearing twice in a lineup
+function syncDuplicates(side) {
+  const prefix = side === 'away' ? 'awayBatter' : 'homeBatter';
+  const chosen = {};
+  for (let i = 1; i <= 9; i++) {
+    const sel = document.getElementById(prefix + i);
+    if (sel && sel.value) chosen[sel.value] = i;
+  }
+  for (let i = 1; i <= 9; i++) {
+    const sel = document.getElementById(prefix + i);
+    if (!sel) continue;
+    sel.querySelectorAll('option[value]').forEach(opt => {
+      if (!opt.value) return;
+      opt.disabled = chosen[opt.value] !== undefined && chosen[opt.value] !== i;
+    });
+  }
+}
+
+// Run on page load so pre-selected values are already de-duped
+syncDuplicates('away');
+syncDuplicates('home');
+
+// -----------------------------------------------------------------------
+// Weather auto-fill
+// -----------------------------------------------------------------------
+function fetchWeather() {
+  const btn    = document.getElementById('weatherBtn');
+  const status = document.getElementById('weatherStatus');
+
+  btn.disabled = true;
+  btn.innerHTML = '<span class="spinner-border spinner-border-sm"></span> Fetching…';
+  status.className = 'alert alert-info py-2 small mb-3';
+  status.textContent = 'Fetching weather data…';
+
+  fetch('/api/weather/{{ game.id }}')
+    .then(r => r.json())
+    .then(data => {
+      btn.disabled = false;
+      btn.innerHTML = '<i class="bi bi-cloud-sun"></i> Fetch Current Weather';
+
+      // Dome — weather doesn't matter
+      if (data.dome) {
+        status.className = 'alert alert-warning py-2 small mb-3';
+        status.textContent = data.message;
+        return;
+      }
+
+      // Error
+      if (data.error) {
+        status.className = 'alert alert-danger py-2 small mb-3';
+        status.textContent = data.error + (data.help ? ' ' + data.help : '');
+        return;
+      }
+
+      // Fill in numeric fields
+      document.getElementById('temperature_f').value  = Math.round(data.temperature_f);
+      document.getElementById('wind_speed_mph').value = Math.round(data.wind_speed_mph);
+      document.getElementById('humidity_pct').value   = Math.round(data.humidity_pct);
+      document.getElementById('pressure_inhg').value  = data.pressure_inhg;
+
+      // Show compass hint for wind direction
+      if (data.wind_speed_mph < 4) {
+        // Calm — auto-select Calm/Variable
+        const sel = document.getElementById('wind_direction');
+        for (let opt of sel.options) {
+          if (opt.text.includes('Calm')) { opt.selected = true; break; }
+        }
+        document.getElementById('windHint').style.display = 'none';
+      } else {
+        document.getElementById('windFrom').textContent = data.wind_compass;
+        document.getElementById('windHint').style.display = 'block';
+      }
+
+      const desc = data.description || '';
+      status.className = 'alert alert-success py-2 small mb-3';
+      status.innerHTML =
+        `<strong>${data.park_name}</strong> — ${desc}, ` +
+        `${Math.round(data.temperature_f)}°F, ` +
+        `wind ${Math.round(data.wind_speed_mph)} mph from ${data.wind_compass}, ` +
+        `${Math.round(data.humidity_pct)}% humidity, ` +
+        `${data.pressure_inhg}" pressure. ` +
+        `<span class="text-warning">▸ Set wind direction above based on the compass reading.</span>`;
+    })
+    .catch(err => {
+      btn.disabled = false;
+      btn.innerHTML = '<i class="bi bi-cloud-sun"></i> Fetch Current Weather';
+      status.className = 'alert alert-danger py-2 small mb-3';
+      status.textContent = 'Network error fetching weather. Check your connection.';
+    });
+}
+</script>
+{% endblock %}

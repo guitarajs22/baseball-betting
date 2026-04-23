@@ -1,0 +1,30 @@
+# Web framework
+flask==3.0.3
+flask-sqlalchemy==3.1.1
+flask-login==0.6.3
+werkzeug==3.1.6
+jinja2==3.1.6
+itsdangerous==2.2.0
+click==8.1.8
+blinker==1.9.0
+
+# Database
+sqlalchemy==2.0.48
+
+# Data / modeling
+pandas==2.2.2
+numpy==1.26.4
+scipy==1.13.1
+plotly==5.22.0
+
+# External APIs
+requests==2.32.3
+pybaseball==2.2.7
+mlb-statsapi==1.9.0
+
+# Scheduling & env
+apscheduler==3.10.4
+python-dotenv==1.0.1
+
+# Production WSGI
+gunicorn==22.0.0

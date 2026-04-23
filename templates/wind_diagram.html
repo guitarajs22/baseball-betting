@@ -1,0 +1,119 @@
+{#
+  Wind diagram macro — renders a top-down baseball field SVG with a wind arrow.
+
+  Usage:
+    {% from "wind_diagram.html" import wind_diagram %}
+    {{ wind_diagram(game, size=160) }}
+
+  Parameters:
+    game  — a Game ORM object with .wind_deg, .wind_speed_mph, .wind_direction, .ballpark
+    size  — pixel size of the square SVG (default 160)
+#}
+{% macro wind_diagram(game, size=160) %}
+{% set park = game.ballpark %}
+{% set has_wind = game.wind_deg is not none and game.wind_speed_mph is not none %}
+{% set is_dome  = park and park.roof_type == 'dome' %}
+{% set cf_deg   = park.cf_bearing_deg if (park and park.cf_bearing_deg is not none) else 300 %}
+
+{#
+  field_rel_deg: direction wind is BLOWING toward, relative to the field diagram
+  where 0° = toward CF (out), 90° = L→R crosswind, 180° = toward HP (in), 270° = R→L crosswind.
+  wind_deg is the compass direction wind comes FROM. We add 180 to get the TO direction,
+  then subtract the CF bearing to make it field-relative.
+#}
+{% if has_wind and not is_dome %}
+  {% set wind_to   = (game.wind_deg + 180) % 360 %}
+  {% set field_rel = (wind_to - cf_deg + 360) % 360 %}
+
+  {# Pick arrow color: toward CF = green (helps HRs), toward HP = red (hurts), crosswind = yellow #}
+  {% if field_rel < 45 or field_rel >= 315 %}
+    {% set arrow_color = "#4ade80" %}   {# green — out to CF #}
+    {% set wind_label  = "Out to CF" %}
+  {% elif field_rel >= 135 and field_rel < 225 %}
+    {% set arrow_color = "#f87171" %}   {# red — in from CF #}
+    {% set wind_label  = "In from CF" %}
+  {% elif field_rel >= 45 and field_rel < 135 %}
+    {% set arrow_color = "#facc15" %}   {# yellow — L→R crosswind #}
+    {% set wind_label  = "L→R Wind" %}
+  {% else %}
+    {% set arrow_color = "#facc15" %}   {# yellow — R→L crosswind #}
+    {% set wind_label  = "R→L Wind" %}
+  {% endif %}
+{% else %}
+  {% set field_rel   = 0 %}
+  {% set arrow_color = "#6b7280" %}
+  {% set wind_label  = "No data" %}
+{% endif %}
+
+<div class="wind-diagram-wrap text-center">
+  <svg viewBox="0 0 200 210" width="{{ size }}" height="{{ size }}"
+       xmlns="http://www.w3.org/2000/svg" style="display:block;margin:0 auto;">
+
+    <!-- Outfield grass circle -->
+    <circle cx="100" cy="98" r="90" fill="#1a4a0e" stroke="#0f2a08" stroke-width="2"/>
+
+    <!-- Foul lines extending to the edges -->
+    <line x1="100" y1="178" x2="25" y2="18"  stroke="white" stroke-width="1" opacity="0.4"/>
+    <line x1="100" y1="178" x2="175" y2="18" stroke="white" stroke-width="1" opacity="0.4"/>
+
+    <!-- Infield dirt (rotated square / diamond) -->
+    <polygon points="100,178 162,116 100,54 38,116" fill="#b5813a"/>
+
+    <!-- Pitcher's mound -->
+    <circle cx="100" cy="116" r="8" fill="#c49040"/>
+
+    <!-- 2nd base -->
+    <rect x="95" y="49" width="10" height="10" fill="white" transform="rotate(45 100 54)"/>
+    <!-- 1st base -->
+    <rect x="157" y="111" width="10" height="10" fill="white" transform="rotate(45 162 116)"/>
+    <!-- 3rd base -->
+    <rect x="33" y="111" width="10" height="10" fill="white" transform="rotate(45 38 116)"/>
+    <!-- Home plate (pentagon) -->
+    <polygon points="93,183 107,183 112,175 100,170 88,175" fill="white"/>
+
+    <!-- Field labels -->
+    <text x="100" y="13" text-anchor="middle" fill="white" font-size="11"
+          font-family="system-ui,sans-serif" font-weight="bold" opacity="0.85">CF</text>
+    <text x="178" y="118" text-anchor="start" fill="white" font-size="10"
+          font-family="system-ui,sans-serif" opacity="0.75">RF</text>
+    <text x="22" y="118" text-anchor="end" fill="white" font-size="10"
+          font-family="system-ui,sans-serif" opacity="0.75">LF</text>
+    <text x="100" y="205" text-anchor="middle" fill="white" font-size="10"
+          font-family="system-ui,sans-serif" opacity="0.75">HP</text>
+
+    {% if is_dome %}
+      <!-- Dome overlay -->
+      <text x="100" y="105" text-anchor="middle" fill="#9ca3af" font-size="13"
+            font-family="system-ui,sans-serif">DOME</text>
+      <text x="100" y="122" text-anchor="middle" fill="#6b7280" font-size="10"
+            font-family="system-ui,sans-serif">No wind effect</text>
+    {% elif has_wind %}
+      <!-- Wind arrow — rotated around field center (100,116) -->
+      <g transform="rotate({{ field_rel }}, 100, 116)">
+        <!-- Arrow shaft -->
+        <line x1="100" y1="148" x2="100" y2="62"
+              stroke="{{ arrow_color }}" stroke-width="4" stroke-linecap="round"/>
+        <!-- Arrow tip (pointing toward destination) -->
+        <polygon points="100,48 91,68 109,68" fill="{{ arrow_color }}"/>
+        <!-- Tail feathers (showing origin) -->
+        <line x1="100" y1="148" x2="90"  y2="163" stroke="{{ arrow_color }}" stroke-width="2.5" opacity="0.6"/>
+        <line x1="100" y1="148" x2="110" y2="163" stroke="{{ arrow_color }}" stroke-width="2.5" opacity="0.6"/>
+      </g>
+    {% else %}
+      <!-- No wind data placeholder -->
+      <text x="100" y="112" text-anchor="middle" fill="#6b7280" font-size="11"
+            font-family="system-ui,sans-serif">No weather</text>
+      <text x="100" y="127" text-anchor="middle" fill="#4b5563" font-size="10"
+            font-family="system-ui,sans-serif">data yet</text>
+    {% endif %}
+  </svg>
+
+  <!-- Wind summary below the diagram -->
+  {% if has_wind and not is_dome %}
+  <div class="mt-1" style="font-size:0.72rem; line-height:1.4;">
+    <span style="color:{{ arrow_color }}; font-weight:600;">{{ wind_label }}</span>
+    <span class="text-muted ms-1">{{ "%.1f"|format(game.wind_speed_mph) }} mph {{ game.wind_direction or '' }}</span>
+  </div>
+  {% endif %}
+</div>
+{% endmacro %}

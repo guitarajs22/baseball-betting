@@ -1,0 +1,54 @@
+# --- Secrets ---
+.env
+.env.local
+.env.*.local
+
+# --- Python ---
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+*.egg-info/
+.pytest_cache/
+.mypy_cache/
+
+# --- Virtual environments ---
+venv/
+env/
+.venv/
+
+# --- OS / editor ---
+.DS_Store
+Thumbs.db
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# --- Logs ---
+*.log
+logs/
+nohup.out
+
+# --- Backtest artifacts (large CSVs, caches, logs) ---
+# Keep the Python modules, exclude everything else
+backtest/**/*.csv
+backtest/**/*.log
+backtest/**/*.json
+backtest/**/_done
+backtest/**/final_report.txt
+backtest/**/run_*.txt
+backtest/results*.csv
+backtest/f5_*.json
+backtest/lineup_cache*.json
+
+# --- User-exported data (personal) ---
+exports/
+
+# --- Deployment artifacts ---
+*.bak
+
+# --- NOTE: database/betting.db is intentionally NOT ignored ---
+# It ships with the repo as the seed DB. On Railway, the seed is copied once
+# into the persistent /data volume; subsequent deploys don't overwrite it.

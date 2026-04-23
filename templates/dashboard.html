@@ -1,0 +1,449 @@
+{% extends "base.html" %}
+{% block title %}Dashboard — Baseball Betting{% endblock %}
+
+{% block content %}
+
+<!-- ── Stats Bar ────────────────────────────────────────────────────────────── -->
+<div class="row g-3 mb-4">
+
+  <!-- Bankroll -->
+  <div class="col-6 col-md-3">
+    <div class="stat-card">
+      <div class="stat-label">Bankroll</div>
+      <div class="stat-value text-success">${{ "%.2f"|format(bankroll) }}</div>
+      <div class="stat-sub"><a href="/bankroll" class="text-muted text-decoration-none">View history →</a></div>
+    </div>
+  </div>
+
+  <!-- Record -->
+  <div class="col-6 col-md-3">
+    <div class="stat-card">
+      <div class="stat-label">Record</div>
+      <div class="stat-value">
+        <span class="text-success">{{ bet_wins }}</span><span class="text-muted" style="font-size:18px;"> – </span><span class="text-danger">{{ bet_losses }}</span>
+      </div>
+      <div class="stat-sub">{% if bet_pending > 0 %}{{ bet_pending }} pending{% else %}all graded{% endif %}</div>
+    </div>
+  </div>
+
+  <!-- P&L -->
+  <div class="col-6 col-md-3">
+    <div class="stat-card">
+      <div class="stat-label">Total P&amp;L</div>
+      <div class="stat-value {% if bet_total_pl > 0 %}text-success{% elif bet_total_pl < 0 %}text-danger{% else %}text-muted{% endif %}">
+        {{ '+' if bet_total_pl > 0 else '' }}${{ "%.2f"|format(bet_total_pl) }}
+      </div>
+      <div class="stat-sub">ROI {{ '+' if roi > 0 else '' }}{{ "%.1f"|format(roi) }}%</div>
+    </div>
+  </div>
+
+  <!-- CLV -->
+  <div class="col-6 col-md-3">
+    <div class="stat-card">
+      <div class="stat-label">Avg CLV</div>
+      <div class="stat-value {% if avg_clv and avg_clv > 0 %}text-success{% elif avg_clv and avg_clv < 0 %}text-danger{% else %}text-muted{% endif %}">
+        {% if avg_clv is not none %}{{ '+' if avg_clv > 0 else '' }}{{ "%.1f"|format(avg_clv) }}¢{% else %}—{% endif %}
+      </div>
+      <div class="stat-sub">{{ clv_sample }} bets w/ data</div>
+    </div>
+  </div>
+
+</div>
+
+<!-- Quick Actions row -->
+<div class="d-flex gap-2 mb-4">
+  <button class="btn btn-primary btn-sm" onclick="importGames('today', this)">
+    <i class="bi bi-cloud-download"></i> Import Today
+  </button>
+  <button class="btn btn-outline-primary btn-sm" onclick="importGames('tomorrow', this)">
+    <i class="bi bi-calendar-plus"></i> Import Tomorrow
+  </button>
+  <a href="{{ url_for('games_list') }}" class="btn btn-outline-secondary btn-sm">
+    <i class="bi bi-calendar3"></i> All Games
+  </a>
+</div>
+
+<!-- Import status message -->
+<div id="importStatus" class="alert py-2 small mb-3 d-none"></div>
+
+<!-- ── Active Bet Watchlist ──────────────────────────────────────────────────── -->
+<div class="d-flex justify-content-between align-items-center mb-2">
+  <h5 class="text-uppercase text-muted mb-0">
+    <i class="bi bi-eye"></i> Active Bets
+  </h5>
+  {% if watchlist_games %}
+  <span class="text-muted small">Auto-refreshing scores every 60s</span>
+  {% endif %}
+</div>
+
+{% if watchlist_games %}
+<div class="row g-3 mb-4" id="watchlistCards">
+  {% for game in watchlist_games %}
+  {% set my_bets = bets_by_game.get(game.id, []) %}
+  {% set home = game.home_team %}
+  {% set away = game.away_team %}
+  <div class="col-12 col-md-6 col-lg-4">
+    <div class="card h-100" data-game-id="{{ game.id }}"
+         data-mlb-id="{{ game.mlb_game_id or '' }}">
+
+      <!-- Score header -->
+      <div class="card-header py-2">
+        <div class="d-flex justify-content-between align-items-center">
+
+          <!-- Away team + score -->
+          <div class="text-center" style="width:38%">
+            <div class="fw-bold" style="font-size:0.88rem; color:var(--be-blue);">{{ away.abbreviation if away else '?' }}</div>
+            <div class="score-away fw-bold lh-1" style="font-size:2rem;"
+                 data-game="{{ game.id }}">
+              {% if game.status == 'final' and game.away_score is not none %}
+                {{ game.away_score }}
+              {% else %}—{% endif %}
+            </div>
+          </div>
+
+          <!-- Status / inning -->
+          <div class="text-center" style="width:24%">
+            <div class="score-status text-muted small" data-game="{{ game.id }}">
+              {% if game.status == 'final' %}
+                <span class="badge bg-danger">FINAL</span>
+              {% elif game.status == 'live' %}
+                <span class="badge bg-success">LIVE</span>
+              {% else %}
+                <span class="badge bg-secondary">{{ game.status | upper }}</span>
+              {% endif %}
+            </div>
+            <div class="score-inning text-muted" style="font-size:0.72rem;" data-game="{{ game.id }}"></div>
+            {% if game.game_date != today %}
+            <div class="text-muted mt-1" style="font-size:0.65rem;">
+              {{ game.game_date.strftime('%m/%d') }}
+            </div>
+            {% endif %}
+          </div>
+
+          <!-- Home team + score -->
+          <div class="text-center" style="width:38%">
+            <div class="fw-bold" style="font-size:0.88rem; color:var(--be-amber);">{{ home.abbreviation if home else '?' }}</div>
+            <div class="score-home fw-bold lh-1" style="font-size:2rem;"
+                 data-game="{{ game.id }}">
+              {% if game.status == 'final' and game.home_score is not none %}
+                {{ game.home_score }}
+              {% else %}—{% endif %}
+            </div>
+          </div>
+
+        </div>
+      </div>
+
+      <!-- Bets on this game -->
+      <div class="card-body py-2">
+        <div class="section-header mb-2">Your Bets</div>
+        {% for bet in my_bets %}
+        {% set winning = (
+            (bet.side == 'home' and game.home_score is not none and game.away_score is not none and game.home_score > game.away_score) or
+            (bet.side == 'away' and game.home_score is not none and game.away_score is not none and game.away_score > game.home_score) or
+            (bet.side == 'over' and game.home_score is not none and game.away_score is not none) or
+            (bet.side == 'under' and game.home_score is not none and game.away_score is not none)
+        ) %}
+        <div class="d-flex justify-content-between align-items-center py-1 border-bottom" style="border-color:var(--be-border)!important;">
+          <div class="d-flex align-items-center gap-2">
+            {% if bet.bet_type == 'moneyline' %}
+              <span class="pill-ml">ML</span>
+            {% elif 'total' in (bet.bet_type or '') or 'f5_' in (bet.bet_type or '') %}
+              <span class="pill-totals">{{ bet.bet_type | replace('_',' ') | upper }}</span>
+            {% elif 'runline' in (bet.bet_type or '') %}
+              <span class="pill-rl">RL</span>
+            {% else %}
+              <span class="pill-other">{{ bet.bet_type | replace('_',' ') | upper }}</span>
+            {% endif %}
+            <span class="fw-bold" style="font-size:0.82rem;">{{ bet.side | upper }}</span>
+            <span class="text-muted" style="font-size:0.78rem;">{{ '+' if bet.price > 0 else '' }}{{ bet.price }}</span>
+          </div>
+          <div class="text-end" style="font-size:0.82rem;">
+            <span class="fw-bold">${{ "%.0f"|format(bet.recommended_bet or 0) }}</span>
+            {% if bet.won == true %}
+              <span class="result-win ms-2"><span class="result-dot"></span>W
+                {% if bet.profit_loss is not none %}+${{ "%.0f"|format(bet.profit_loss) }}{% endif %}
+              </span>
+            {% elif bet.won == false %}
+              <span class="result-loss ms-2"><span class="result-dot"></span>L
+                {% if bet.profit_loss is not none %}-${{ "%.0f"|format(bet.profit_loss | abs) }}{% endif %}
+              </span>
+            {% elif game.status in ['live', 'in_progress'] and game.home_score is not none %}
+              <span class="{% if winning %}result-win{% else %}result-loss{% endif %} ms-2">
+                <span class="result-dot"></span>{% if winning %}Winning{% else %}Losing{% endif %}
+              </span>
+            {% else %}
+              <span class="result-pending ms-2">Pending</span>
+            {% endif %}
+          </div>
+        </div>
+        {% endfor %}
+      </div>
+
+      <div class="card-footer py-1 text-end">
+        <a href="/game/{{ game.id }}" class="btn btn-outline-secondary btn-sm py-0 px-2" style="font-size:0.75rem;">
+          Game Detail →
+        </a>
+      </div>
+    </div>
+  </div>
+  {% endfor %}
+</div>
+
+{% else %}
+<div class="alert alert-secondary mb-4">
+  <i class="bi bi-info-circle"></i>
+  No placed bets for today yet.
+  Go to <a href="{{ url_for('games_list') }}" class="alert-link">Games</a>, run simulations,
+  and mark recommendations as placed to see them here.
+</div>
+{% endif %}
+
+<!-- ── Today's Top Picks ────────────────────────────────────────────────────── -->
+<div class="d-flex justify-content-between align-items-center mb-2">
+  <h5 class="text-uppercase text-muted mb-0">
+    <i class="bi bi-lightning-charge"></i> Today's Top Picks
+  </h5>
+  <a href="{{ url_for('bets_page', filter='pending') }}" class="text-muted small">
+    View all pending →
+  </a>
+</div>
+
+{% if top_picks %}
+<div class="table-responsive mb-4">
+  <table class="table table-hover table-sm align-middle">
+    <thead class="table-secondary">
+      <tr>
+        <th>Matchup</th>
+        <th>Type</th>
+        <th>Side</th>
+        <th>Book</th>
+        <th>Price</th>
+        <th>Our %</th>
+        <th>Edge</th>
+        <th>EV%</th>
+        <th>Bet $</th>
+        <th></th>
+      </tr>
+    </thead>
+    <tbody>
+      {% for bet in top_picks %}
+      {% set g = bet.game %}
+      <tr>
+        <td>
+          <a href="/game/{{ g.id }}" class="text-decoration-none fw-bold" style="font-size:0.82rem;">
+            {{ g.away_team.abbreviation if g and g.away_team else '?' }}
+            <span class="text-muted fw-normal">@</span>
+            {{ g.home_team.abbreviation if g and g.home_team else '?' }}
+          </a>
+        </td>
+        <td>
+          {% if bet.bet_type == 'moneyline' %}
+            <span class="pill-ml">ML</span>
+          {% elif 'f5' in (bet.bet_type or '') %}
+            <span class="pill-f5">F5</span>
+          {% elif 'total' in (bet.bet_type or '') %}
+            <span class="pill-totals">O/U</span>
+          {% elif 'runline' in (bet.bet_type or '') %}
+            <span class="pill-rl">RL</span>
+          {% else %}
+            <span class="pill-other">{{ bet.bet_type | replace('_',' ') | upper if bet.bet_type else '—' }}</span>
+          {% endif %}
+        </td>
+        <td class="fw-bold" style="font-size:0.82rem;">{{ bet.side | upper }}</td>
+        <td><span class="text-muted" style="font-size:0.78rem;">{{ bet.bookmaker | replace('_us','') | replace('_',' ') | title if bet.bookmaker else '—' }}</span></td>
+        <td class="fw-bold {% if bet.price and bet.price > 0 %}text-success{% endif %}" style="font-size:0.82rem;">
+          {{ '+' if bet.price and bet.price > 0 else '' }}{{ bet.price or '—' }}
+        </td>
+        <td style="font-size:0.82rem;">{{ "%.1f"|format(bet.model_probability * 100) if bet.model_probability else '—' }}%</td>
+        <td class="fw-bold {% if bet.edge_pct and bet.edge_pct >= 3 %}text-success{% elif bet.edge_pct and bet.edge_pct > 0 %}text-warning{% else %}text-danger{% endif %}" style="font-size:0.82rem;">
+          {{ '+' if bet.edge_pct and bet.edge_pct > 0 else '' }}{{ "%.1f"|format(bet.edge_pct) if bet.edge_pct else '—' }}%
+        </td>
+        <td class="{% if bet.ev_pct and bet.ev_pct > 0 %}text-success{% else %}text-danger{% endif %}" style="font-size:0.82rem;">
+          {{ '+' if bet.ev_pct and bet.ev_pct > 0 else '' }}{{ "%.1f"|format(bet.ev_pct) if bet.ev_pct else '—' }}%
+        </td>
+        <td class="fw-bold" style="font-size:0.82rem;">${{ "%.0f"|format(bet.recommended_bet or 0) }}</td>
+        <td>
+          <a href="/game/{{ g.id }}" class="btn btn-outline-secondary btn-sm py-0 px-2" style="font-size:0.72rem;">
+            View →
+          </a>
+        </td>
+      </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+</div>
+
+{% else %}
+<div class="alert alert-secondary mb-4">
+  <i class="bi bi-info-circle"></i>
+  No recommendations for today yet.
+  <a href="{{ url_for('games_list') }}" class="alert-link">Go to Games</a>
+  and run simulations to generate picks.
+</div>
+{% endif %}
+
+<!-- ── Recent Results ────────────────────────────────────────────────────────── -->
+<div class="d-flex justify-content-between align-items-center mb-2">
+  <h5 class="text-uppercase text-muted mb-0">
+    <i class="bi bi-clock-history"></i> Recent Results
+  </h5>
+  <a href="{{ url_for('bets_page') }}" class="text-muted small">View all bets →</a>
+</div>
+
+{% if recent_results %}
+<div class="row g-2 mb-4">
+  {% for bet in recent_results %}
+  {% set g = bet.game %}
+  <div class="col-12 col-md-6 col-lg-4">
+    <div class="card h-100">
+      <div class="card-body py-2 d-flex justify-content-between align-items-center">
+        <div>
+          <div class="fw-bold" style="font-size:0.85rem;">
+            {{ g.away_team.abbreviation if g and g.away_team else '?' }}
+            <span class="text-muted fw-normal">@</span>
+            {{ g.home_team.abbreviation if g and g.home_team else '?' }}
+            {% if g and g.home_score is not none %}
+            <span class="text-muted fw-normal ms-1">{{ g.away_score }}–{{ g.home_score }}</span>
+            {% endif %}
+          </div>
+          <div class="text-muted mt-1" style="font-size:0.75rem;">
+            {% if bet.bet_type == 'moneyline' %}
+              <span class="pill-ml">ML</span>
+            {% elif 'f5' in (bet.bet_type or '') %}
+              <span class="pill-f5">F5</span>
+            {% elif 'total' in (bet.bet_type or '') %}
+              <span class="pill-totals">O/U</span>
+            {% elif 'runline' in (bet.bet_type or '') %}
+              <span class="pill-rl">RL</span>
+            {% else %}
+              <span class="pill-other">{{ bet.bet_type | replace('_',' ') | upper if bet.bet_type else '' }}</span>
+            {% endif %}
+            <span class="ms-1">{{ bet.side | upper }}</span>
+            <span class="ms-1 text-muted">{{ '+' if bet.price > 0 else '' }}{{ bet.price }}</span>
+          </div>
+        </div>
+        <div class="text-end">
+          {% if bet.won %}
+            <div class="result-win"><span class="result-dot"></span>Win</div>
+          {% else %}
+            <div class="result-loss"><span class="result-dot"></span>Loss</div>
+          {% endif %}
+          <div class="fw-bold mt-1 {% if bet.profit_loss and bet.profit_loss > 0 %}text-success{% else %}text-danger{% endif %}" style="font-size:0.82rem;">
+            {{ '+' if bet.profit_loss and bet.profit_loss > 0 else '' }}${{ "%.2f"|format(bet.profit_loss or 0) }}
+          </div>
+          {% if bet.clv_cents is not none %}
+          <div class="text-muted mt-1" style="font-size:0.72rem;"
+               title="Closing Line Value — positive means you got a better price than where the market closed">
+            <span class="{% if bet.clv_cents > 0 %}text-success{% elif bet.clv_cents < 0 %}text-danger{% else %}text-muted{% endif %}">
+              CLV {{ '+' if bet.clv_cents > 0 else '' }}{{ "%.1f"|format(bet.clv_cents) }}¢
+            </span>
+          </div>
+          {% endif %}
+        </div>
+      </div>
+    </div>
+  </div>
+  {% endfor %}
+</div>
+{% else %}
+<div class="alert alert-secondary mb-4">
+  No settled bets yet — results will appear here as games finish.
+</div>
+{% endif %}
+
+{% endblock %}
+
+{% block scripts %}
+<script>
+// ── Import games ─────────────────────────────────────────────────────────────
+function importGames(when, btn) {
+  const status = document.getElementById('importStatus');
+  const today = '{{ today.isoformat() }}';
+  let targetDate = today;
+  if (when === 'tomorrow') {
+    const d = new Date(today + 'T12:00:00');
+    d.setDate(d.getDate() + 1);
+    targetDate = d.toISOString().split('T')[0];
+  }
+  btn.disabled = true;
+  const origLabel = btn.innerHTML;
+  btn.innerHTML = '<span class="spinner-border spinner-border-sm"></span> Importing…';
+
+  fetch(`/games/import?date=${targetDate}`, { headers: { 'Accept': 'application/json' } })
+    .then(r => r.json())
+    .then(data => {
+      btn.disabled = false;
+      btn.innerHTML = origLabel;
+      status.classList.remove('d-none', 'alert-success', 'alert-warning', 'alert-danger');
+      if (data.success) {
+        const label = when === 'today' ? 'Today' : 'Tomorrow';
+        if (data.imported > 0) {
+          status.classList.add('alert-success');
+          status.textContent = `✓ Imported ${data.imported} game(s) for ${label}.`;
+        } else {
+          status.classList.add('alert-warning');
+          status.textContent = `${label}: ${data.skipped} game(s) already on file.`;
+        }
+      } else {
+        status.classList.add('alert-danger');
+        status.textContent = data.error || 'Import failed.';
+      }
+    })
+    .catch(() => {
+      btn.disabled = false;
+      btn.innerHTML = origLabel;
+      status.classList.remove('d-none');
+      status.classList.add('alert-danger');
+      status.textContent = 'Network error. Is the app running?';
+    });
+}
+
+// ── Live score polling ────────────────────────────────────────────────────────
+const watchlistCards = document.querySelectorAll('[data-game-id]');
+const gameIds = Array.from(watchlistCards).map(c => c.dataset.gameId).filter(Boolean);
+
+function refreshScores() {
+  if (!gameIds.length) return;
+  fetch('/api/live-scores?' + gameIds.map(id => `ids=${id}`).join('&'))
+    .then(r => r.json())
+    .then(data => {
+      for (const [gameId, info] of Object.entries(data)) {
+        const awayEl   = document.querySelector(`.score-away[data-game="${gameId}"]`);
+        const homeEl   = document.querySelector(`.score-home[data-game="${gameId}"]`);
+        const statusEl = document.querySelector(`.score-status[data-game="${gameId}"]`);
+        const inningEl = document.querySelector(`.score-inning[data-game="${gameId}"]`);
+
+        if (awayEl && info.away_score !== null && info.away_score !== undefined)
+          awayEl.textContent = info.away_score;
+        if (homeEl && info.home_score !== null && info.home_score !== undefined)
+          homeEl.textContent = info.home_score;
+
+        if (statusEl) {
+          const s = (info.status || '').toLowerCase();
+          let badgeClass = 'bg-secondary';
+          let label = info.status || '—';
+          if (s.includes('progress') || s === 'live') { badgeClass = 'bg-success'; label = 'LIVE'; }
+          else if (s === 'final') { badgeClass = 'bg-danger'; label = 'FINAL'; }
+          statusEl.innerHTML = `<span class="badge ${badgeClass}">${label}</span>`;
+        }
+
+        if (inningEl) {
+          if (info.inning && info.inning_state) {
+            inningEl.textContent = `${info.inning_state} ${info.inning}`;
+          } else {
+            inningEl.textContent = '';
+          }
+        }
+      }
+    })
+    .catch(() => {}); // silently ignore network errors during polling
+}
+
+// Poll immediately then every 60 seconds
+if (gameIds.length) {
+  refreshScores();
+  setInterval(refreshScores, 60000);
+}
+</script>
+{% endblock %}
