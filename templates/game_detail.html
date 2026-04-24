@@ -184,7 +184,7 @@
             <div style="font-size:0.72rem; color:#888; margin-top:1px;">{{ 'favored' if sim.away_win_pct > sim.home_win_pct else 'underdog' }}</div>
           </div>
           <div class="text-center" style="font-size:0.72rem; color:#555; padding-top:4px;">
-            <i class="bi bi-dice-3 text-success"></i> {{ "{:,}".format(sim.num_simulations | int) if sim.num_simulations else '10,000' }} sims · {{ sim.created_at.strftime('%I:%M %p') }}
+            <i class="bi bi-dice-3 text-success"></i> {{ "{:,}".format(sim.num_simulations | int) if sim.num_simulations else '10,000' }} sims · {{ sim.created_at | pacific('%I:%M %p') }}
             {% if sim_stale %}<br><span class="badge bg-warning text-dark mt-1" style="font-size:0.62rem;"><i class="bi bi-arrow-repeat"></i> Re-simulate</span>{% endif %}
           </div>
           <div class="text-end">

@@ -132,7 +132,7 @@
             <tbody>
               {% for log in history %}
               <tr>
-                <td><small class="text-muted">{{ log.date.strftime('%m/%d %I:%M%p') }}</small></td>
+                <td><small class="text-muted">{{ log.date | pacific('%m/%d %I:%M%p') }}</small></td>
                 <td class="fw-bold {% if log.change > 0 %}text-success{% elif log.change < 0 %}text-danger{% else %}text-muted{% endif %}">
                   {{ '+' if log.change > 0 else '' }}${{ "%.2f"|format(log.change) }}
                 </td>

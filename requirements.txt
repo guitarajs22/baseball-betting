@@ -25,6 +25,7 @@ mlb-statsapi==1.9.0
 # Scheduling & env
 apscheduler==3.10.4
 python-dotenv==1.0.1
+tzdata==2025.3
 
 # Production WSGI
 gunicorn==22.0.0

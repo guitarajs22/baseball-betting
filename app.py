@@ -160,20 +160,45 @@ def _require_login():
 # Jinja2 filters
 # ---------------------------------------------------------------------------
 
+# ---------------------------------------------------------------------------
+# Timezone filters — DB stores naive UTC, UI shows Pacific (PDT/PST aware)
+# ---------------------------------------------------------------------------
+try:
+    from zoneinfo import ZoneInfo
+    _PACIFIC_TZ = ZoneInfo("America/Los_Angeles")
+except Exception:
+    # Fallback: pure -7 offset. Only hits if zoneinfo + tzdata both missing.
+    from datetime import timezone as _tz, timedelta as _td
+    _PACIFIC_TZ = _tz(_td(hours=-7))
+
+
+def _to_pacific(utc_dt):
+    """Treat a naive datetime as UTC and return a Pacific-aware datetime."""
+    if utc_dt is None:
+        return None
+    from datetime import timezone as _tz
+    if utc_dt.tzinfo is None:
+        utc_dt = utc_dt.replace(tzinfo=_tz.utc)
+    return utc_dt.astimezone(_PACIFIC_TZ)
+
+
 @app.template_filter("pacific_time")
 def pacific_time_filter(utc_dt):
-    """Convert a UTC datetime to Pacific time string, e.g. '4:05 PM PT'."""
-    if utc_dt is None:
+    """Convert a UTC datetime to Pacific time + DST-correct abbr, e.g. '4:05 PM PDT'."""
+    local = _to_pacific(utc_dt)
+    if local is None:
         return ""
-    # PDT = UTC-7, PST = UTC-8.  Use the system's own offset so DST is automatic.
-    import time as _time
-    offset_seconds = -_time.timezone if _time.daylight == 0 else -_time.altzone
-    from datetime import timezone, timedelta
-    local_dt = utc_dt.replace(tzinfo=timezone.utc).astimezone(
-        timezone(timedelta(seconds=offset_seconds))
-    )
-    abbr = "PT"
-    return local_dt.strftime("%-I:%M %p") + f" {abbr}"
+    abbr = local.strftime("%Z") or "PT"
+    return local.strftime("%-I:%M %p") + f" {abbr}"
+
+
+@app.template_filter("pacific")
+def pacific_filter(utc_dt, fmt="%-I:%M %p"):
+    """Flexible Pacific-time formatter — pass any strftime format string."""
+    local = _to_pacific(utc_dt)
+    if local is None:
+        return ""
+    return local.strftime(fmt)
 
 
 # ---------------------------------------------------------------------------

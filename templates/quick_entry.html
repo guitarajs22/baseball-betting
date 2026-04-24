@@ -64,7 +64,7 @@
             <span class="text-muted"> @ </span>
             <span class="fw-bold">{{ game.home_team.abbreviation }}</span>
             {% if game.game_time_utc %}
-            <br><small class="text-muted">{{ (game.game_time_utc - timedelta(hours=7)).strftime('%-I:%M %p') }} PDT</small>
+            <br><small class="text-muted">{{ game.game_time_utc | pacific_time }}</small>
             {% endif %}
           </td>
 

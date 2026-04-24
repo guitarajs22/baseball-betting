@@ -111,7 +111,7 @@
         {% endif %}">
 
         <td class="text-muted">
-          <small>{{ bet.created_at.strftime('%m/%d') }}<br>{{ bet.created_at.strftime('%I:%M%p') }}</small>
+          <small>{{ bet.created_at | pacific('%m/%d') }}<br>{{ bet.created_at | pacific('%I:%M%p') }}</small>
         </td>
 
         <!-- Game link with team names -->
