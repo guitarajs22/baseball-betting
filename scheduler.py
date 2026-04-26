@@ -37,6 +37,41 @@ def _log(job_id: str, status: str, detail: str) -> None:
     SCHEDULER_LOG[job_id]["detail"]   = detail
 
 
+# ── Venue overrides ───────────────────────────────────────────────────────
+# When MLB plays games at a non-team-stadium venue (Mexico Series, Tokyo
+# Series, London Series, Field of Dreams, etc.), the schedule API returns
+# the actual venue's MLB venue_id but the home team is unchanged. Without
+# an override, every game inherits the home team's regular ballpark, so
+# park factors / altitude / weather all come from the wrong place.
+#
+# Map MLB API venue_id → Ballpark.name; the ballpark must already be seeded
+# in init_db()'s _intl_venues block. If the lookup misses, we fall back to
+# the home team's regular ballpark.
+_MLB_VENUE_OVERRIDES = {
+    5340: "Estadio Alfredo Harp Helú",   # Mexico City — Mexico Series
+    # 4249: "Tokyo Dome",                 # Tokyo Series (add when seeded)
+    # 2:    "London Stadium",             # London Series (add when seeded)
+}
+
+
+def _resolve_ballpark_id(mlb_venue_id, home_team):
+    """
+    Pick the right ballpark for a game.
+    - If the schedule's MLB venue_id is in the override map, use that ballpark.
+    - Otherwise, fall back to the home team's stadium.
+    Returns (ballpark_id_or_None, override_was_applied: bool).
+    """
+    from database.schema import Ballpark
+    if mlb_venue_id and mlb_venue_id in _MLB_VENUE_OVERRIDES:
+        bp_name = _MLB_VENUE_OVERRIDES[mlb_venue_id]
+        bp = Ballpark.query.filter_by(name=bp_name).first()
+        if bp:
+            return bp.id, True
+        # Override registered but ballpark missing — log and fall through
+        logger.warning(f"[scheduler] venue override {mlb_venue_id} → {bp_name} not in DB; using home team's stadium")
+    return (home_team.ballpark_id if home_team else None), False
+
+
 # ── Job 1: Import tomorrow's games ─────────────────────────────────────────
 
 def run_import_games(app, target_date: Optional[date] = None) -> dict:
@@ -139,6 +174,12 @@ def run_import_games(app, target_date: Optional[date] = None) -> dict:
                 except ValueError:
                     pass
 
+            # Resolve ballpark — handles international/neutral-site overrides
+            ballpark_id, used_override = _resolve_ballpark_id(g.get("venue_id"), home_team)
+            if used_override:
+                logger.info(f"[scheduler] Venue override: {away_team.abbreviation}@{home_team.abbreviation} on {target_date} "
+                            f"playing at {g.get('venue_name')} (MLB venue_id={g.get('venue_id')})")
+
             game = Game(
                 mlb_game_id=mlb_game_id,
                 game_date=target_date,
@@ -147,7 +188,7 @@ def run_import_games(app, target_date: Optional[date] = None) -> dict:
                 away_team_id=away_team.id,
                 home_starter_id=home_starter.id if home_starter else None,
                 away_starter_id=away_starter.id if away_starter else None,
-                ballpark_id=home_team.ballpark_id,
+                ballpark_id=ballpark_id,
                 umpire_id=umpire_id,
                 status=g.get("status", "scheduled"),
                 game_number=int(g.get("game_num", 1) or 1),

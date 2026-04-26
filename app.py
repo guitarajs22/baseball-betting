@@ -3671,6 +3671,13 @@ def import_games():
             except ValueError:
                 pass
 
+        # Resolve ballpark — handles international/neutral-site overrides (Mexico/Tokyo/etc)
+        from scheduler import _resolve_ballpark_id as _resolve_bp
+        ballpark_id, used_override = _resolve_bp(g.get("venue_id"), home_team)
+        if used_override:
+            logger.info(f"[/games/import] Venue override: {away_team.abbreviation}@{home_team.abbreviation} on {target_date} "
+                        f"playing at {g.get('venue_name')} (MLB venue_id={g.get('venue_id')})")
+
         game = Game(
             mlb_game_id=mlb_game_id,
             game_date=target_date,
@@ -3679,7 +3686,7 @@ def import_games():
             away_team_id=away_team.id,
             home_starter_id=home_starter.id if home_starter else None,
             away_starter_id=away_starter.id if away_starter else None,
-            ballpark_id=home_team.ballpark_id,
+            ballpark_id=ballpark_id,
             umpire_id=umpire_id,
             status=g.get("status", "scheduled"),
             game_number=game_number,
@@ -4853,12 +4860,14 @@ def _quick_entry_analyze_inner():
                         walk_rate_allowed=bp.walk_rate_allowed,
                         strikeout_rate=bp.strikeout_rate, out_rate=bp.out_rate)
 
+                # Use the game's own ballpark (which may be a neutral/intl
+                # venue like Mexico City), NOT the home team's regular stadium.
                 park = ParkFactors()
-                if game.home_team.ballpark:
+                if game.ballpark:
                     park = ParkFactors(
-                        runs=game.home_team.ballpark.park_factor_runs or 1.0,
-                        hr=game.home_team.ballpark.park_factor_hr or 1.0,
-                        hits=game.home_team.ballpark.park_factor_hits or 1.0)
+                        runs=game.ballpark.park_factor_runs or 1.0,
+                        hr=game.ballpark.park_factor_hr or 1.0,
+                        hits=game.ballpark.park_factor_hits or 1.0)
 
                 hsp = _starter(game.home_team_id)
                 asp = _starter(game.away_team_id)
@@ -5085,6 +5094,47 @@ def init_db():
                 db.session.commit()
             except Exception:
                 db.session.rollback()   # column already exists — safe to ignore
+
+        # ── Idempotent seed: international/neutral-site venues ─────────────────
+        # MLB sometimes plays games outside the home team's stadium (Mexico
+        # Series, Tokyo Series, London Series, Field of Dreams, etc.). When that
+        # happens, the home team is still "home" but the park factors, altitude,
+        # weather, and roof type all need to come from the actual venue.
+        #
+        # We seed these here (idempotent — only inserted if missing) and the
+        # scheduler maps the MLB API's venue_id to the right ballpark_id at
+        # import time.
+        _intl_venues = [
+            {
+                "name": "Estadio Alfredo Harp Helú",
+                "city": "Mexico City",
+                "state": "MX",
+                "latitude": 19.4153,
+                "longitude": -99.0997,
+                # Highest-altitude pro ballpark in the world (above Coors at 5,200 ft).
+                # Air density ~22% lower than sea level → balls travel ~10% farther.
+                "altitude_feet": 7349.0,
+                # Estimates calibrated against early MLB samples there
+                # (2023 SD-SF, 2024 HOU-COL, etc. — total runs/HRs were extreme).
+                # Slightly above Coors for runs, well above for HR rate.
+                "park_factor_runs": 1.30,
+                "park_factor_hr":   1.40,
+                "park_factor_hits": 1.10,
+                "roof_type":        "open",
+                "cf_bearing_deg":   30.0,  # rough — home plate faces ~NE
+            },
+        ]
+        for v in _intl_venues:
+            existing = Ballpark.query.filter_by(name=v["name"]).first()
+            if existing is None:
+                bp = Ballpark(**v)
+                db.session.add(bp)
+                try:
+                    db.session.commit()
+                    logger.info(f"[init_db] Seeded venue: {v['name']}")
+                except Exception as e:
+                    db.session.rollback()
+                    logger.warning(f"[init_db] Could not seed venue {v['name']}: {e}")
 
         # ── One-time dedup: remove stale unplaced recommendations ──────────────
         # A previous bug left `won`-graded records with placed=False alive when
