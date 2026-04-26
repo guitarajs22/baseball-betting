@@ -3641,6 +3641,20 @@ def import_games():
                             updated_fields.append("umpire")
                 except Exception:
                     pass
+
+            # Re-resolve ballpark — corrects games imported before a venue
+            # override was added, or when MLB late-swaps a venue.
+            from scheduler import _resolve_ballpark_id as _resolve_bp
+            eg_home = existing_game.home_team
+            desired_bp_id, used_override = _resolve_bp(g.get("venue_id"), eg_home)
+            if desired_bp_id and existing_game.ballpark_id != desired_bp_id:
+                old_bp_id = existing_game.ballpark_id
+                existing_game.ballpark_id = desired_bp_id
+                updated_fields.append("ballpark")
+                logger.info(f"[/games/import] Ballpark corrected for {existing_game.away_team.abbreviation}@{eg_home.abbreviation} "
+                            f"on {existing_game.game_date}: {old_bp_id} → {desired_bp_id} "
+                            f"(venue: {g.get('venue_name')}, override={used_override})")
+
             if updated_fields:
                 db.session.commit()
                 imported += 1

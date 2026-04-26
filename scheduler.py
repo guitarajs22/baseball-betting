@@ -108,6 +108,19 @@ def run_import_games(app, target_date: Optional[date] = None) -> dict:
                 elif mlb_status in ("Postponed", "Cancelled") and existing_game.status not in ("postponed", "cancelled"):
                     existing_game.status = mlb_status.lower()
                     updated_fields.append("status")
+
+                # Re-resolve ballpark for existing games — corrects games imported
+                # before an override was added, or when MLB swaps a venue late.
+                eg_home = existing_game.home_team
+                desired_bp_id, used_override = _resolve_ballpark_id(g.get("venue_id"), eg_home)
+                if desired_bp_id and existing_game.ballpark_id != desired_bp_id:
+                    old_bp_id = existing_game.ballpark_id
+                    existing_game.ballpark_id = desired_bp_id
+                    updated_fields.append("ballpark")
+                    logger.info(f"[scheduler] Ballpark corrected for {existing_game.away_team.abbreviation}@{eg_home.abbreviation} "
+                                f"on {existing_game.game_date}: {old_bp_id} → {desired_bp_id} "
+                                f"(venue: {g.get('venue_name')}, override={used_override})")
+
                 if updated_fields:
                     raw_dt = g.get("game_datetime")
                     if raw_dt:
