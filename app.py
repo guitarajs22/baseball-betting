@@ -3824,6 +3824,43 @@ def api_recalculate_recs():
     })
 
 
+@app.route("/debug/odds")
+@login_required
+def debug_odds():
+    """Diagnostic endpoint — verifies The Odds API key is working.
+    Reveals only the first 8 + last 4 chars of the key (never the full key)."""
+    import requests as _r
+    if not ODDS_API_KEY:
+        return jsonify({"key_set": False, "error": "ODDS_API_KEY env var is empty or missing"}), 200
+
+    fingerprint = f"{ODDS_API_KEY[:8]}...{ODDS_API_KEY[-4:]}"
+    out = {
+        "key_set":     True,
+        "fingerprint": fingerprint,
+        "key_length":  len(ODDS_API_KEY),
+    }
+    # Hit /sports endpoint to check key validity + remaining quota
+    try:
+        resp = _r.get("https://api.the-odds-api.com/v4/sports",
+                      params={"apiKey": ODDS_API_KEY}, timeout=5)
+        out["status_code"] = resp.status_code
+        out["remaining_requests"] = resp.headers.get("x-requests-remaining")
+        out["used_requests"]      = resp.headers.get("x-requests-used")
+        if resp.status_code != 200:
+            out["api_message"] = resp.text[:200]
+    except Exception as e:
+        out["error"] = f"Network error: {type(e).__name__}: {e}"
+    # Try fetching MLB odds
+    try:
+        games = get_odds(ODDS_API_KEY, markets="h2h")
+        out["mlb_games_returned"] = len(games)
+        if games:
+            out["sample_game"] = f"{games[0].get('away_team')} @ {games[0].get('home_team')}"
+    except Exception as e:
+        out["mlb_error"] = f"{type(e).__name__}: {e}"
+    return jsonify(out), 200
+
+
 @app.route("/odds/refresh")
 def refresh_odds():
     """Fetch latest odds from The Odds API and update the database."""
