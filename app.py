@@ -3974,8 +3974,10 @@ def refresh_odds():
                     db.session.add(odds_row)
                 updated += 1
 
-        # Fetch F5 odds for this game via the per-event endpoint
-        if game.odds_api_id:
+        # Fetch F5 odds for this game via the per-event endpoint.
+        # GATED — see scheduler.py comment. Off by default.
+        f5_enabled = os.getenv("FETCH_F5_ODDS", "0") == "1"
+        if f5_enabled and game.odds_api_id:
             from data.odds_api import get_f5_odds
             f5_data = get_f5_odds(ODDS_API_KEY, game.odds_api_id)
             for f5_market, f5_book_list in f5_data.items():
