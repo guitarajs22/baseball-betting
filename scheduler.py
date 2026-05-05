@@ -10,6 +10,7 @@ Each job writes its result to SCHEDULER_LOG so the UI can show last-run status.
 """
 
 import logging
+import os
 from datetime import date, datetime, timedelta
 from typing import Optional
 
