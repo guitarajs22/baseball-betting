@@ -60,8 +60,11 @@ def get_odds(api_key: str, markets: str = "h2h,spreads,totals",
         response = requests.get(url, params=params, timeout=10)
         response.raise_for_status()
         data = response.json()
-        logger.info(f"Fetched odds for {len(data)} games. "
-                    f"Requests remaining: {response.headers.get('x-requests-remaining', '?')}")
+        used = response.headers.get('x-requests-used', '?')
+        rem  = response.headers.get('x-requests-remaining', '?')
+        last = response.headers.get('x-requests-last', '?')
+        logger.info(f"[odds-api] get_odds(markets={markets}): {len(data)} games — "
+                    f"this call cost {last} credits (used={used}, remaining={rem})")
         return data
     except requests.exceptions.HTTPError as e:
         if response.status_code == 401:
@@ -235,6 +238,11 @@ def get_f5_odds(api_key: str, odds_api_event_id: str,
         response = requests.get(url, params=params, timeout=10)
         response.raise_for_status()
         data = response.json()
+        used = response.headers.get('x-requests-used', '?')
+        rem  = response.headers.get('x-requests-remaining', '?')
+        last = response.headers.get('x-requests-last', '?')
+        logger.info(f"[odds-api] get_f5_odds(event={odds_api_event_id}): "
+                    f"this call cost {last} credits (used={used}, remaining={rem})")
     except Exception as e:
         logger.warning(f"F5 odds fetch failed for event {odds_api_event_id}: {e}")
         return {}

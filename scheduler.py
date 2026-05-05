@@ -551,8 +551,13 @@ def run_odds_refresh(app) -> dict:
                         db.session.add(odds_row)
                     updated += 1
 
-            # Fetch F5 odds via the per-event endpoint
-            if game.odds_api_id:
+            # Fetch F5 odds via the per-event endpoint.
+            # GATED: the per-event F5 call costs ~2 credits per game (~24-30
+            # credits on a 12-15 game slate), which dominated our burn rate.
+            # Off by default — set FETCH_F5_ODDS=1 to re-enable for the auto
+            # refresh. Game-detail pages can fetch on-demand instead.
+            f5_enabled = os.getenv("FETCH_F5_ODDS", "0") == "1"
+            if f5_enabled and game.odds_api_id:
                 from data.odds_api import get_f5_odds
                 api_key_env = os.getenv("ODDS_API_KEY", "")
                 f5_data = get_f5_odds(api_key_env, game.odds_api_id)
@@ -649,10 +654,14 @@ def init_scheduler(app) -> None:
         misfire_grace_time=3600,
     )
 
-    # Refresh odds every 2 hours (uses ~360 of the 500 monthly API requests)
+    # Refresh odds every 6 hours.
+    # Burn math (with FETCH_F5_ODDS off — the default):
+    #   ~6 credits per refresh × 4 refreshes/day = ~24 credits/day
+    #   = ~720 credits/month. Configurable via ODDS_REFRESH_HOURS env var.
+    _odds_interval_hours = int(os.getenv("ODDS_REFRESH_HOURS", "6") or 6)
     _scheduler.add_job(
         lambda: _job_odds(app),
-        IntervalTrigger(hours=2),
+        IntervalTrigger(hours=_odds_interval_hours),
         id="odds",
         name="Refresh odds",
         replace_existing=True,
@@ -680,12 +689,18 @@ def init_scheduler(app) -> None:
     )
 
     _scheduler.start()
-    logger.info("[scheduler] Started — import_games@20:00, odds@2h, weather@hourly, umpires@10:00")
+    logger.info(f"[scheduler] Started — import_games@20:00, odds@{_odds_interval_hours}h, weather@hourly, umpires@10:00")
 
-    # Run odds + weather refresh immediately on startup so the UI is never stale.
-    # Both are fire-and-forget background threads — app starts serving instantly.
+    # Startup-fire: only weather (no API cost). Odds startup-fire is GATED —
+    # off by default so Railway redeploys don't burn credits. Set
+    # FIRE_ODDS_ON_STARTUP=1 if you actually want a fresh fetch on every
+    # container restart (and accept the ~6-credit hit per restart).
     import threading
-    threading.Thread(target=lambda: _job_odds(app),    daemon=True).start()
+    if os.getenv("FIRE_ODDS_ON_STARTUP", "0") == "1":
+        logger.info("[scheduler] FIRE_ODDS_ON_STARTUP=1 → firing odds refresh now")
+        threading.Thread(target=lambda: _job_odds(app),    daemon=True).start()
+    else:
+        logger.info("[scheduler] Skipping startup odds-fire (set FIRE_ODDS_ON_STARTUP=1 to enable)")
     threading.Thread(target=lambda: _job_weather(app), daemon=True).start()
 
     # Update next_run times in the log
