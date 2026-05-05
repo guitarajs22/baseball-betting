@@ -4563,7 +4563,133 @@ def settings_page():
         "min_edge_pct":   get_setting("min_edge_pct",   6.0),
         "kelly_fraction": get_setting("kelly_fraction",  0.25),
     }
-    return render_template("settings.html", current=current, message=message)
+    return render_template("settings.html", current=current, message=message,
+                           admin_status=ADMIN_TASK_STATUS)
+
+
+# ---------------------------------------------------------------------------
+# Admin tasks (FanGraphs import, roster sync) — fire-and-forget background
+# ---------------------------------------------------------------------------
+# These can take 30-90 seconds, so we run them in a background thread and
+# expose progress via ADMIN_TASK_STATUS. The settings page reads it to render
+# a status badge, and /admin/status returns it as JSON for live polling.
+
+ADMIN_TASK_STATUS = {
+    "fangraphs": {"state": "idle", "detail": "Never run", "started_at": None, "finished_at": None},
+    "rosters":   {"state": "idle", "detail": "Never run", "started_at": None, "finished_at": None},
+}
+
+
+def _run_admin_task(task_id, fn):
+    """Run an admin task in a background thread, track status in ADMIN_TASK_STATUS."""
+    import threading, traceback
+    def _wrapped():
+        ADMIN_TASK_STATUS[task_id] = {
+            "state":       "running",
+            "detail":      "In progress…",
+            "started_at":  datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+            "finished_at": None,
+        }
+        try:
+            with app.app_context():
+                detail = fn()
+            ADMIN_TASK_STATUS[task_id] = {
+                "state":       "ok",
+                "detail":      detail or "Completed.",
+                "started_at":  ADMIN_TASK_STATUS[task_id]["started_at"],
+                "finished_at": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+            }
+        except Exception as e:
+            logger.error(f"[admin] {task_id} failed: {e}\n{traceback.format_exc()}")
+            ADMIN_TASK_STATUS[task_id] = {
+                "state":       "error",
+                "detail":      f"{type(e).__name__}: {e}",
+                "started_at":  ADMIN_TASK_STATUS[task_id]["started_at"],
+                "finished_at": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+            }
+    threading.Thread(target=_wrapped, daemon=True).start()
+
+
+@app.route("/admin/import-fangraphs", methods=["POST"])
+def admin_import_fangraphs():
+    """Run FanGraphs CSV import against this environment's DB.
+    Reads CSVs from exports/{year}/ folder (which is in the repo)."""
+    if ADMIN_TASK_STATUS["fangraphs"]["state"] == "running":
+        flash("FanGraphs import is already running. Check back in a minute.", "danger")
+        return redirect(url_for("settings_page"))
+
+    seasons_arg = request.form.get("seasons", "").strip()
+    if seasons_arg:
+        try:
+            seasons = [int(s) for s in seasons_arg.split(",")]
+        except ValueError:
+            flash(f"Invalid seasons: {seasons_arg}", "danger")
+            return redirect(url_for("settings_page"))
+    else:
+        # Default: every season that has at least one CSV present
+        seasons = []
+        for y in range(2024, date.today().year + 1):
+            year_dir = os.path.join(os.path.dirname(__file__), "exports", str(y))
+            if os.path.isdir(year_dir) and any(f.endswith(".csv") for f in os.listdir(year_dir)):
+                seasons.append(y)
+
+    if not seasons:
+        flash("No FanGraphs CSVs found in exports/ — push them to the repo first.", "danger")
+        return redirect(url_for("settings_page"))
+
+    def _do_import():
+        from import_data import import_fangraphs_batting, import_fangraphs_pitching
+        results = []
+        for season in seasons:
+            import_fangraphs_batting(season)
+            import_fangraphs_pitching(season)
+            results.append(str(season))
+        return f"Imported FanGraphs CSVs for season(s): {', '.join(results)}"
+
+    _run_admin_task("fangraphs", _do_import)
+    flash(f"FanGraphs import started for season(s) {seasons}. "
+          f"Refresh the page in ~30-60s to see status.", "success")
+    return redirect(url_for("settings_page"))
+
+
+@app.route("/admin/update-rosters", methods=["POST"])
+def admin_update_rosters():
+    """Sync rosters + handedness + pitching stats from MLB API."""
+    if ADMIN_TASK_STATUS["rosters"]["state"] == "running":
+        flash("Roster sync is already running. Check back in a minute.", "danger")
+        return redirect(url_for("settings_page"))
+
+    season = int(request.form.get("season") or date.today().year)
+    mode   = request.form.get("mode", "all")  # all|stats|rosters|handedness
+
+    def _do_sync():
+        from update_rosters import sync_rosters, sync_handedness, sync_pitching_stats
+        if mode == "handedness":
+            sync_handedness()
+            return f"Handedness synced for season {season}."
+        if mode == "rosters":
+            sync_rosters(season)
+            sync_handedness()
+            return f"Rosters + handedness synced for season {season}."
+        if mode == "stats":
+            sync_pitching_stats(season)
+            return f"Pitching stats synced for season {season}."
+        # default: full sync
+        sync_rosters(season)
+        sync_handedness()
+        sync_pitching_stats(season)
+        return f"Full sync (rosters + handedness + pitching stats) done for season {season}."
+
+    _run_admin_task("rosters", _do_sync)
+    flash(f"Roster/stats sync started for season {season}, mode={mode}. "
+          f"This usually takes 1-2 minutes — refresh the page to see status.", "success")
+    return redirect(url_for("settings_page"))
+
+
+@app.route("/admin/status")
+def admin_status():
+    """JSON snapshot of admin task progress — used for live polling from the UI."""
+    return jsonify(ADMIN_TASK_STATUS)
 
 
 @app.route("/backtest")

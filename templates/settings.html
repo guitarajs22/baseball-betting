@@ -72,6 +72,82 @@
     </div>
   </div>
 
+  <!-- Admin: stats + rosters import -->
+  <div class="col-12">
+    <div class="card bg-black border-secondary">
+      <div class="card-header text-muted text-uppercase small">
+        <i class="bi bi-database-gear"></i> Admin — Refresh data
+      </div>
+      <div class="card-body">
+        <p class="text-muted small mb-3">
+          Pulls fresh data into <strong>this environment's database</strong>.
+          On Railway, this updates the live app. On localhost, it updates your laptop's DB.
+          Each run takes 30–90 seconds and writes a status badge below.
+        </p>
+
+        <div class="row g-4">
+
+          <!-- FanGraphs import -->
+          <div class="col-md-6">
+            <h6 class="text-light"><i class="bi bi-bar-chart-line"></i> FanGraphs stats</h6>
+            <p class="text-muted small mb-2">
+              Reads CSVs from <code>exports/{year}/</code> in the repo and updates batter +
+              pitcher stats. To refresh source data first: re-export from FanGraphs locally,
+              <code>git push</code>, wait for redeploy, then click here.
+            </p>
+            <form method="POST" action="{{ url_for('admin_import_fangraphs') }}" class="mb-2">
+              <div class="input-group input-group-sm mb-2" style="max-width:280px;">
+                <span class="input-group-text bg-dark border-secondary text-muted">Seasons</span>
+                <input type="text" name="seasons"
+                       class="form-control bg-dark text-light border-secondary"
+                       placeholder="leave blank for all (2024,2025,2026)">
+              </div>
+              <button type="submit" class="btn btn-primary btn-sm"
+                      id="fgImportBtn">
+                <i class="bi bi-cloud-download"></i> Import FanGraphs Stats
+              </button>
+            </form>
+            <div id="fgStatus" class="small mt-2"></div>
+          </div>
+
+          <!-- Roster + handedness + stats sync -->
+          <div class="col-md-6">
+            <h6 class="text-light"><i class="bi bi-people-fill"></i> Rosters + MLB stats</h6>
+            <p class="text-muted small mb-2">
+              Pulls live from the MLB Stats API (free, no key required). Updates team
+              assignments, active status, throwing/batting hand, and current-season pitching stats.
+            </p>
+            <form method="POST" action="{{ url_for('admin_update_rosters') }}" class="mb-2">
+              <div class="row g-2 mb-2">
+                <div class="col-sm-6">
+                  <select name="season" class="form-select form-select-sm bg-dark text-light border-secondary">
+                    <option value="2026" selected>Season 2026</option>
+                    <option value="2025">Season 2025</option>
+                    <option value="2024">Season 2024</option>
+                  </select>
+                </div>
+                <div class="col-sm-6">
+                  <select name="mode" class="form-select form-select-sm bg-dark text-light border-secondary">
+                    <option value="all" selected>Full sync</option>
+                    <option value="rosters">Rosters only</option>
+                    <option value="stats">Pitching stats only</option>
+                    <option value="handedness">Handedness only (fast)</option>
+                  </select>
+                </div>
+              </div>
+              <button type="submit" class="btn btn-primary btn-sm"
+                      id="rosterSyncBtn">
+                <i class="bi bi-arrow-clockwise"></i> Update Rosters
+              </button>
+            </form>
+            <div id="rosterStatus" class="small mt-2"></div>
+          </div>
+
+        </div>
+      </div>
+    </div>
+  </div>
+
   <!-- How Threshold Odds Work -->
   <div class="col-lg-6">
     <div class="card bg-black border-secondary">
@@ -110,4 +186,52 @@
   </div>
 
 </div>
+{% endblock %}
+
+{% block scripts %}
+<script>
+// Live-poll admin task status. Shows per-task badge with state, last run, detail.
+(function () {
+  const stateBadge = (state) => {
+    const map = {
+      idle:    ['secondary', 'Idle'],
+      running: ['warning',   'Running…'],
+      ok:      ['success',   'OK'],
+      error:   ['danger',    'Error'],
+    };
+    const [color, label] = map[state] || ['secondary', state];
+    return `<span class="badge bg-${color}">${label}</span>`;
+  };
+
+  function render(task, elId) {
+    const el = document.getElementById(elId);
+    if (!el) return;
+    const t = task || {};
+    const stamp = t.finished_at || t.started_at || '';
+    el.innerHTML =
+      stateBadge(t.state || 'idle') + ' ' +
+      `<span class="text-muted ms-1">${t.detail || ''}</span>` +
+      (stamp ? ` <span class="text-muted ms-1">· ${stamp}</span>` : '');
+  }
+
+  function poll() {
+    fetch('/admin/status', { credentials: 'same-origin' })
+      .then(r => r.ok ? r.json() : null)
+      .then(d => {
+        if (!d) return;
+        render(d.fangraphs, 'fgStatus');
+        render(d.rosters,   'rosterStatus');
+        // Disable buttons while a task is running
+        const fgBtn = document.getElementById('fgImportBtn');
+        const rsBtn = document.getElementById('rosterSyncBtn');
+        if (fgBtn) fgBtn.disabled = (d.fangraphs && d.fangraphs.state === 'running');
+        if (rsBtn) rsBtn.disabled = (d.rosters   && d.rosters.state   === 'running');
+      })
+      .catch(() => {});
+  }
+
+  poll();                       // initial
+  setInterval(poll, 3000);      // every 3s while page is open
+})();
+</script>
 {% endblock %}

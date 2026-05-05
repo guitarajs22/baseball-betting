@@ -43,8 +43,12 @@ backtest/results*.csv
 backtest/f5_*.json
 backtest/lineup_cache*.json
 
-# --- User-exported data (personal) ---
-exports/
+# --- FanGraphs CSV exports ---
+# These ARE committed to the repo so they travel to Railway and the
+# /admin/import-fangraphs route can refresh production stats from them.
+# To refresh: re-export from FanGraphs into exports/{year}/, git push,
+# click "Import FanGraphs Stats" in /settings on the live app.
+# (Empty placeholder file kept by the .gitkeep below.)
 
 # --- Deployment artifacts ---
 *.bak
