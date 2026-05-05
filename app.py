@@ -28,7 +28,8 @@ from models.simulation import (run_simulations, calculate_over_under, calculate_
                                  GameInputs, BatterProfile, PitcherProfile,
                                  BullpenProfile, ParkFactors, WeatherFactors, UmpireFactors,
                                  DefenseFactors, CatcherFactors,
-                                 build_batter_profile, build_pitcher_profile)
+                                 build_batter_profile, build_pitcher_profile,
+                                 build_pitcher_split_rates)
 from models.kelly import analyze_bet, american_to_implied_prob, american_to_decimal
 from models.calibration import calibrate_prob
 from data.mlb_api import get_game_result, get_first_inning_result
@@ -1447,10 +1448,18 @@ def _run_simulation_inner(game, game_id, season, home_lineup_rows, away_lineup_r
             out_rate=rates.get("out_rate", 0.458),
         )
 
+    # Minimum IP in a single platoon split before we trust it. Below this
+    # threshold the sample is too noisy and we fall back to overall rates.
+    # ~50 IP is roughly 200 batters faced — enough for K/BB rates to stabilize.
+    _PITCHER_SPLIT_MIN_IP = 50.0
+
     def build_pitcher(player: Player, season: int) -> PitcherProfile:
         """
         Build a pitcher profile blending up to 3 seasons of data.
         Recent seasons weighted more heavily (5/4/3).
+        Also populates platoon splits (vs_LHB / vs_RHB) when sample is large
+        enough — these are used per-PA inside blend_rates() based on the
+        actual batter's handedness.
         """
         rates, total_ip, stamina = _blend_pitcher(player.id, "overall")
         if not rates:
@@ -1459,7 +1468,17 @@ def _run_simulation_inner(game, game_id, season, home_lineup_rows, away_lineup_r
                 **_PITCHER_DEFAULTS,
                 stamina=6.0,
             )
-        return build_pitcher_profile(
+
+        # Build the platoon-splits dict. If a split is missing or the sample
+        # is below threshold, leave it out and blend_rates falls back to
+        # overall for batters of that hand.
+        splits = {}
+        for bat_hand, db_split in [("L", "vs_LHB"), ("R", "vs_RHB")]:
+            split_rates, split_ip, _ = _blend_pitcher(player.id, db_split)
+            if split_rates and split_ip >= _PITCHER_SPLIT_MIN_IP:
+                splits[bat_hand] = build_pitcher_split_rates(split_rates, split_ip)
+
+        profile = build_pitcher_profile(
             name=player.name, throws=player.throws or "R",
             ip=total_ip,
             single_rate_allowed=rates.get("single_rate_allowed", 0.150),
@@ -1471,6 +1490,9 @@ def _run_simulation_inner(game, game_id, season, home_lineup_rows, away_lineup_r
             out_rate=rates.get("out_rate", 0.458),
             stamina=stamina,
         )
+        if splits:
+            profile.splits = splits
+        return profile
 
     def build_bullpen(team_id: int, season: int) -> BullpenProfile:
         _league_avg = BullpenProfile(
@@ -5004,7 +5026,7 @@ def _quick_entry_analyze_inner():
                     def wv(f): return sum((getattr(s,f) or 0)*(s.ip or 0) for s in rotation)/tip
                     ts = sum(s.games_started or 0 for s in rotation) or 1
                     lhp = sum((s.ip or 0) for s in rotation if s.player.throws=="L")
-                    return build_pitcher_profile(name="Rotation Avg",
+                    profile = build_pitcher_profile(name="Rotation Avg",
                         throws="L" if lhp > tip/2 else "R", ip=tip,
                         single_rate_allowed=wv("single_rate_allowed"),
                         double_rate_allowed=wv("double_rate_allowed"),
@@ -5013,6 +5035,40 @@ def _quick_entry_analyze_inner():
                         walk_rate_allowed=wv("walk_rate_allowed"),
                         strikeout_rate=wv("strikeout_rate"),
                         out_rate=wv("out_rate"), stamina=tip/ts)
+
+                    # Build rotation-average platoon splits the same way:
+                    # for each batter handedness, query the rotation's vs_LHB
+                    # or vs_RHB rows, IP-weight them, and regress.
+                    rotation_player_ids = [s.player_id for s in rotation]
+                    rotation_splits = {}
+                    for bat_hand, db_split in [("L", "vs_LHB"), ("R", "vs_RHB")]:
+                        split_rows = (PitchingStats.query
+                                      .filter(PitchingStats.player_id.in_(rotation_player_ids),
+                                              PitchingStats.season==season,
+                                              PitchingStats.role=="SP",
+                                              PitchingStats.split==db_split)
+                                      .all())
+                        if not split_rows:
+                            continue
+                        split_tip = sum(r.ip or 0 for r in split_rows)
+                        # Same threshold as single-game path: 50 IP minimum
+                        # (~200 batters faced in this split across the rotation)
+                        if split_tip < 50.0:
+                            continue
+                        def split_wv(f, rows=split_rows, tip=split_tip):
+                            return sum((getattr(r, f) or 0) * (r.ip or 0) for r in rows) / tip
+                        rotation_splits[bat_hand] = build_pitcher_split_rates({
+                            "single_rate_allowed":   split_wv("single_rate_allowed"),
+                            "double_rate_allowed":   split_wv("double_rate_allowed"),
+                            "triple_rate_allowed":   split_wv("triple_rate_allowed"),
+                            "hr_rate_allowed":       split_wv("hr_rate_allowed"),
+                            "walk_rate_allowed":     split_wv("walk_rate_allowed"),
+                            "strikeout_rate":        split_wv("strikeout_rate"),
+                            "out_rate":              split_wv("out_rate"),
+                        }, split_tip)
+                    if rotation_splits:
+                        profile.splits = rotation_splits
+                    return profile
 
                 def _bullpen(team_id):
                     rels = (PitchingStats.query.join(Player)

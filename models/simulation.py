@@ -13,7 +13,7 @@ For each simulation:
 import numpy as np
 import json
 from dataclasses import dataclass, field
-from typing import List, Optional
+from typing import List, Optional, Dict
 
 
 # ---------------------------------------------------------------------------
@@ -46,6 +46,14 @@ class PitcherProfile:
     out_rate: float
     stamina: float = 6.0     # Expected innings before bullpen (SP default)
     is_reliever: bool = False
+    # Optional platoon splits — populated when vs_LHB / vs_RHB sample is large
+    # enough to trust. Keys are batter handedness ("L" or "R"); values are the
+    # same outcome rate dict used in blend_rates ({"single": ..., "double": ...,
+    # "triple": ..., "hr": ..., "walk": ..., "strikeout": ..., "out": ...}).
+    # When None or missing for a batter's hand, blend_rates falls back to the
+    # overall *_allowed fields above. Switch hitters are mapped to the opposite
+    # of the pitcher's throwing hand inside blend_rates.
+    splits: Optional[Dict[str, Dict[str, float]]] = None
 
 
 @dataclass
@@ -290,6 +298,45 @@ def build_batter_profile(name: str, bats: str, pa: int,
     )
 
 
+def build_pitcher_split_rates(rates_dict: dict, ip: float) -> Optional[Dict[str, float]]:
+    """
+    Build a regressed pitcher-rates dict for a single platoon split (vs_LHB or
+    vs_RHB). Returns the same shape as the `pitcher_rates` dict used inside
+    blend_rates: {"single", "double", "triple", "hr", "walk", "strikeout", "out"}.
+
+    Returns None if `rates_dict` is empty (caller should fall back to overall).
+    Sample size is capped — splits naturally have fewer batters faced (typically
+    ~50% of overall), so each rate is regressed with the same K constants but
+    against the BF count derived from IP in *that* split only.
+    """
+    if not rates_dict:
+        return None
+    bf = max(int(ip * 4.3), 1)
+    return {
+        "single": regress_rate(
+            rates_dict.get("single_rate_allowed", LEAGUE_AVG_PITCHING["single_rate_allowed"]),
+            LEAGUE_AVG_PITCHING["single_rate_allowed"], bf, PITCHING_REGRESSION_K["single_rate_allowed"]),
+        "double": regress_rate(
+            rates_dict.get("double_rate_allowed", LEAGUE_AVG_PITCHING["double_rate_allowed"]),
+            LEAGUE_AVG_PITCHING["double_rate_allowed"], bf, PITCHING_REGRESSION_K["double_rate_allowed"]),
+        "triple": regress_rate(
+            rates_dict.get("triple_rate_allowed", LEAGUE_AVG_PITCHING["triple_rate_allowed"]),
+            LEAGUE_AVG_PITCHING["triple_rate_allowed"], bf, PITCHING_REGRESSION_K["triple_rate_allowed"]),
+        "hr": regress_rate(
+            rates_dict.get("hr_rate_allowed", LEAGUE_AVG_PITCHING["hr_rate_allowed"]),
+            LEAGUE_AVG_PITCHING["hr_rate_allowed"], bf, PITCHING_REGRESSION_K["hr_rate_allowed"]),
+        "walk": regress_rate(
+            rates_dict.get("walk_rate_allowed", LEAGUE_AVG_PITCHING["walk_rate_allowed"]),
+            LEAGUE_AVG_PITCHING["walk_rate_allowed"], bf, PITCHING_REGRESSION_K["walk_rate_allowed"]),
+        "strikeout": regress_rate(
+            rates_dict.get("strikeout_rate", LEAGUE_AVG_PITCHING["strikeout_rate"]),
+            LEAGUE_AVG_PITCHING["strikeout_rate"], bf, PITCHING_REGRESSION_K["strikeout_rate"]),
+        "out": regress_rate(
+            rates_dict.get("out_rate", LEAGUE_AVG_PITCHING["out_rate"]),
+            LEAGUE_AVG_PITCHING["out_rate"], bf, PITCHING_REGRESSION_K["out_rate"]),
+    }
+
+
 def build_pitcher_profile(name: str, throws: str, ip: float,
                            single_rate_allowed: float, double_rate_allowed: float,
                            triple_rate_allowed: float, hr_rate_allowed: float,
@@ -373,7 +420,12 @@ def blend_rates(batter: BatterProfile, pitcher: PitcherProfile, park: ParkFactor
         "strikeout": batter.strikeout_rate,
         "out": batter.out_rate,
     }
-    pitcher_rates = {
+    # Pick the right pitcher rates for THIS plate appearance.
+    # If splits are populated AND the matching split exists for this batter's
+    # handedness, use those. Otherwise fall back to the pitcher's overall rates.
+    # Switch hitters bat opposite the pitcher's throwing arm, so we resolve
+    # bats="S" → "R" vs LHP, "L" vs RHP.
+    pitcher_overall_rates = {
         "single": pitcher.single_rate_allowed,
         "double": pitcher.double_rate_allowed,
         "triple": pitcher.triple_rate_allowed,
@@ -382,6 +434,13 @@ def blend_rates(batter: BatterProfile, pitcher: PitcherProfile, park: ParkFactor
         "strikeout": pitcher.strikeout_rate,
         "out": pitcher.out_rate,
     }
+    if getattr(pitcher, "splits", None):
+        effective_bat = batter.bats or "R"
+        if effective_bat == "S":
+            effective_bat = "R" if (pitcher.throws == "L") else "L"
+        pitcher_rates = pitcher.splits.get(effective_bat) or pitcher_overall_rates
+    else:
+        pitcher_rates = pitcher_overall_rates
 
     blended = {}
     for outcome in OUTCOMES:
