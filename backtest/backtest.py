@@ -83,7 +83,8 @@ def simulate_season_backtest(app_context, start_date: str, end_date: str,
                               ml_permissive: bool = False,
                               ml_permissive_calibrated: bool = False,
                               seed: Optional[int] = None,
-                              calibration_variant: str = "standard"):
+                              calibration_variant: str = "standard",
+                              no_pitcher_splits: bool = False):
     """
     Run a full backtest over a date range.
 
@@ -118,6 +119,7 @@ def simulate_season_backtest(app_context, start_date: str, end_date: str,
                                     PitcherProfile, BullpenProfile, ParkFactors,
                                     WeatherFactors, UmpireFactors,
                                     build_batter_profile, build_pitcher_profile,
+                                    build_pitcher_split_rates,
                                     calculate_runline, calculate_over_under)
     from models.kelly import analyze_bet
     from models.calibration import calibrate_prob, calibrate_prob_scoped
@@ -434,7 +436,7 @@ def simulate_season_backtest(app_context, start_date: str, end_date: str,
                              if s.player.throws == "L")
                 avg_throws = "L" if lhp_ip > total_ip / 2 else "R"
 
-                return build_pitcher_profile(
+                profile = build_pitcher_profile(
                     name="Rotation Avg", throws=avg_throws,
                     ip=total_ip,          # full rotation IP for regression purposes
                     single_rate_allowed=wavg("single_rate_allowed"),
@@ -446,6 +448,37 @@ def simulate_season_backtest(app_context, start_date: str, end_date: str,
                     out_rate=wavg("out_rate"),
                     stamina=avg_stamina,
                 )
+                # Attach platoon splits — IP-weighted across the rotation,
+                # gated by --no-pitcher-splits flag for A/B testing.
+                if not no_pitcher_splits:
+                    rotation_player_ids = [s.player_id for s in rotation]
+                    rotation_splits = {}
+                    for bat_hand, db_split in [("L", "vs_LHB"), ("R", "vs_RHB")]:
+                        split_rows = (PitchingStats.query
+                                      .filter(PitchingStats.player_id.in_(rotation_player_ids),
+                                              PitchingStats.season == season,
+                                              PitchingStats.role == "SP",
+                                              PitchingStats.split == db_split)
+                                      .all())
+                        if not split_rows:
+                            continue
+                        split_tip = sum(r.ip or 0 for r in split_rows)
+                        if split_tip < 50.0:  # ~200 BF — too noisy below this
+                            continue
+                        def s_wavg(f, rows=split_rows, tip=split_tip):
+                            return sum((getattr(r, f) or 0) * (r.ip or 0) for r in rows) / tip
+                        rotation_splits[bat_hand] = build_pitcher_split_rates({
+                            "single_rate_allowed": s_wavg("single_rate_allowed"),
+                            "double_rate_allowed": s_wavg("double_rate_allowed"),
+                            "triple_rate_allowed": s_wavg("triple_rate_allowed"),
+                            "hr_rate_allowed":     s_wavg("hr_rate_allowed"),
+                            "walk_rate_allowed":   s_wavg("walk_rate_allowed"),
+                            "strikeout_rate":      s_wavg("strikeout_rate"),
+                            "out_rate":            s_wavg("out_rate"),
+                        }, split_tip)
+                    if rotation_splits:
+                        profile.splits = rotation_splits
+                return profile
 
             def get_team_bullpen(team_id):
                 relievers = (
@@ -534,7 +567,7 @@ def simulate_season_backtest(app_context, start_date: str, end_date: str,
                     )
                 if not stats:
                     return get_team_starter(fallback_team_id)
-                return build_pitcher_profile(
+                profile = build_pitcher_profile(
                     name=player.name,
                     throws=player.throws or "R",
                     ip=stats.ip or 1.0,
@@ -547,6 +580,31 @@ def simulate_season_backtest(app_context, start_date: str, end_date: str,
                     out_rate=stats.out_rate or 0.458,
                     stamina=stats.ip / max(stats.games_started, 1) if stats.games_started else 6.0,
                 )
+                # Attach platoon splits for this specific pitcher,
+                # gated by --no-pitcher-splits flag for A/B testing.
+                if not no_pitcher_splits:
+                    splits = {}
+                    for bat_hand, db_split in [("L", "vs_LHB"), ("R", "vs_RHB")]:
+                        split_row = (PitchingStats.query
+                                     .filter_by(player_id=player.id,
+                                                season=stats.season,
+                                                role="SP",
+                                                split=db_split)
+                                     .first())
+                        if not split_row or (split_row.ip or 0) < 50.0:
+                            continue
+                        splits[bat_hand] = build_pitcher_split_rates({
+                            "single_rate_allowed": split_row.single_rate_allowed or 0.150,
+                            "double_rate_allowed": split_row.double_rate_allowed or 0.047,
+                            "triple_rate_allowed": split_row.triple_rate_allowed or 0.005,
+                            "hr_rate_allowed":     split_row.hr_rate_allowed or 0.030,
+                            "walk_rate_allowed":   split_row.walk_rate_allowed or 0.084,
+                            "strikeout_rate":      split_row.strikeout_rate or 0.226,
+                            "out_rate":            split_row.out_rate or 0.458,
+                        }, split_row.ip or 0)
+                    if splits:
+                        profile.splits = splits
+                return profile
 
             def _lineup_from_cache(batter_entries, opponent_throws, fallback_team_id):
                 """
@@ -1138,6 +1196,7 @@ Examples:
     parser.add_argument("--ml-permissive-calibrated", action="store_true", help="Like --ml-permissive, but KEEPS the calibration layer active. Apples-to-apples comparison to the live app's calibrated probabilities.")
     parser.add_argument("--seed",             type=int,   default=None,   help="Base seed for the Monte Carlo sim. Per-game seeds are derived from (seed, date, teams), so two runs with the same seed see identical sim outputs. Use to isolate calibration/filter changes from MC noise.")
     parser.add_argument("--calibration-variant", default="standard", choices=["standard", "scoped-bypass"], help="Which calibration path to use. 'standard' is production. 'scoped-bypass' applies the away-favorite bypass only when the away side is a favorite (odds < 0). Research mode.")
+    parser.add_argument("--no-pitcher-splits", action="store_true", help="Disable pitcher vs_LHB / vs_RHB splits in the simulation (use overall rates only). Default: splits are ON.  Use to A/B test the impact of splits via two seeded runs.")
     args = parser.parse_args()
 
     from app import app, init_db
@@ -1164,4 +1223,5 @@ Examples:
             ml_permissive_calibrated=args.ml_permissive_calibrated,
             seed=args.seed,
             calibration_variant=args.calibration_variant,
+            no_pitcher_splits=args.no_pitcher_splits,
         )
