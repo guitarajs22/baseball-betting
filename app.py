@@ -4693,6 +4693,74 @@ def admin_status():
     return jsonify(ADMIN_TASK_STATUS)
 
 
+@app.route("/admin/debug-find-pitcher")
+@login_required
+def admin_debug_find_pitcher():
+    """Diagnostic — runs find_or_create_pitcher and reports which step matched.
+    Pass ?name=...&team=ABBR (e.g. ?name=Payton%20Tolle&team=BOS).
+    Lets us see why a pitcher isn't being matched on Railway when it works locally."""
+    import statsapi as _stats
+    name = request.args.get("name", "").strip()
+    team_abbr = request.args.get("team", "").strip().upper()
+    out = {"name": name, "team": team_abbr, "steps": []}
+
+    if not name or not team_abbr:
+        return jsonify({"error": "need ?name= and ?team= params"}), 400
+
+    team = Team.query.filter_by(abbreviation=team_abbr).first()
+    if not team:
+        return jsonify({"error": f"unknown team {team_abbr}"}), 400
+    out["team_id"] = team.id
+
+    PITCHER_POSITIONS = {"SP", "RP", "P", "TWP"}
+    last = name.split()[-1]
+
+    # Step 2
+    p = Player.query.filter_by(name=name, team_id=team.id).first()
+    out["steps"].append({"step": 2, "name": "exact name + team_id",
+                         "match": (p.id if p else None)})
+
+    # Step 3
+    p = Player.query.filter(
+        Player.team_id == team.id,
+        Player.name.ilike(f"%{last}%"),
+        Player.position.in_(PITCHER_POSITIONS),
+    ).first()
+    out["steps"].append({"step": 3, "name": "fuzzy last + team_id",
+                         "match": (p.id if p else None)})
+
+    # Step 4
+    cand4 = Player.query.filter(
+        Player.name == name,
+        Player.position.in_(PITCHER_POSITIONS),
+    ).all()
+    out["steps"].append({"step": 4, "name": "exact-name global pitchers",
+                         "candidates": [(c.id, c.name, c.team_id) for c in cand4]})
+
+    # Step 5
+    cand5 = Player.query.filter(
+        Player.name.ilike(f"%{last}%"),
+        Player.position.in_(PITCHER_POSITIONS),
+    ).all()
+    out["steps"].append({"step": 5, "name": "fuzzy last global pitchers",
+                         "candidates": [(c.id, c.name, c.team_id) for c in cand5]})
+
+    # Step 6 — MLB API
+    try:
+        people = _stats.lookup_player(name)
+        out["steps"].append({"step": 6, "name": "MLB API lookup_player",
+                             "results": [{"id": pp.get("id"),
+                                          "fullName": pp.get("fullName"),
+                                          "position": (pp.get("primaryPosition") or {}).get("abbreviation"),
+                                          "throws": (pp.get("pitchHand") or {}).get("code"),
+                                          } for pp in people]})
+    except Exception as e:
+        out["steps"].append({"step": 6, "name": "MLB API lookup_player",
+                             "error": f"{type(e).__name__}: {e}"})
+
+    return jsonify(out)
+
+
 @app.route("/backtest")
 def backtest_page():
     """Backtest configuration + results page."""
