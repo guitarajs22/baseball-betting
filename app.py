@@ -3588,39 +3588,18 @@ def import_games():
             errors.append(f"Could not match teams: {g.get('away_name')} @ {g.get('home_name')}")
             continue
 
-        # Match probable starters — try mlb_id first, then name
-        PITCHER_POSITIONS = {"SP", "RP", "P", "TWP"}
-
-        def find_starter(mlb_id, name, team_id):
-            if mlb_id:
-                p = Player.query.filter_by(mlb_id=mlb_id).first()
-                if p:
-                    return p
-            if name:
-                # Exact name match on this team first
-                p = Player.query.filter_by(name=name, team_id=team_id).first()
-                if p:
-                    return p
-                # Fuzzy: last name match on this team
-                last = name.split()[-1]
-                p = Player.query.filter(
-                    Player.team_id == team_id,
-                    Player.name.ilike(f"%{last}%"),
-                    Player.position.in_(PITCHER_POSITIONS),
-                ).first()
-                if p:
-                    return p
-            return None
-
-        home_starter = find_starter(
+        # Match probable starters with the resilient ladder (handles trades,
+        # callups, brand-new rookies via MLB API fallback).
+        from data.mlb_api import find_or_create_pitcher
+        home_starter = find_or_create_pitcher(
             g.get("home_probable_pitcher_id"),
             g.get("home_probable_pitcher"),
-            home_team.id,
+            home_team.id, db, Player,
         )
-        away_starter = find_starter(
+        away_starter = find_or_create_pitcher(
             g.get("away_probable_pitcher_id"),
             g.get("away_probable_pitcher"),
-            away_team.id,
+            away_team.id, db, Player,
         )
 
         # ── If game already exists, update date/status/starters/umpire as needed ──

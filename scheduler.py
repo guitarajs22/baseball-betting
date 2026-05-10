@@ -147,27 +147,17 @@ def run_import_games(app, target_date: Optional[date] = None) -> dict:
                 errors.append(f"Unmatched: {g.get('away_name')} @ {g.get('home_name')}")
                 continue
 
-            def find_starter(mlb_id, name, team_id):
-                if mlb_id:
-                    p = Player.query.filter_by(mlb_id=mlb_id).first()
-                    if p:
-                        return p
-                if name:
-                    p = Player.query.filter_by(name=name, team_id=team_id).first()
-                    if p:
-                        return p
-                    last = name.split()[-1]
-                    p = Player.query.filter(
-                        Player.team_id == team_id,
-                        Player.name.ilike(f"%{last}%"),
-                        Player.position.in_(PITCHER_POSITIONS),
-                    ).first()
-                    if p:
-                        return p
-                return None
-
-            home_starter = find_starter(g.get("home_probable_pitcher_id"), g.get("home_probable_pitcher"), home_team.id)
-            away_starter = find_starter(g.get("away_probable_pitcher_id"), g.get("away_probable_pitcher"), away_team.id)
+            from data.mlb_api import find_or_create_pitcher
+            home_starter = find_or_create_pitcher(
+                g.get("home_probable_pitcher_id"),
+                g.get("home_probable_pitcher"),
+                home_team.id, db, Player,
+            )
+            away_starter = find_or_create_pitcher(
+                g.get("away_probable_pitcher_id"),
+                g.get("away_probable_pitcher"),
+                away_team.id, db, Player,
+            )
 
             umpire_id = None
             try:

@@ -9,6 +9,139 @@ from typing import Optional
 
 logger = logging.getLogger(__name__)
 
+PITCHER_POSITIONS = {"SP", "RP", "P", "TWP"}
+
+
+def find_or_create_pitcher(mlb_id, name, team_id, db, Player):
+    """
+    Resilient pitcher matcher used by both scheduler.run_import_games and
+    app.py's /games/import. Walks an escalating ladder of fallbacks so a
+    fresh callup or recently-traded pitcher still gets matched on import,
+    without waiting for the next roster sync.
+
+    Returns a Player row (committed) or None if everything fails.
+
+    The ladder:
+      1. mlb_id exact match (cheapest, most reliable)
+      2. exact name + team_id (fast path for the common case)
+      3. fuzzy last-name + team_id (e.g. "Smith Jr." vs "Smith")
+      4. exact name GLOBALLY across all pitchers — if found, update team_id
+         (handles trades/callups not yet caught by roster sync)
+      5. fuzzy last-name GLOBALLY across pitchers — same team-id update
+      6. MLB API lookup_player as last resort — creates a brand-new Player
+         row with team_id set correctly (handles never-before-seen rookies)
+
+    Steps 4-6 only fire when there is exactly ONE matching candidate so we
+    never mis-attribute a same-named player from a different team.
+    """
+    # 1. mlb_id
+    if mlb_id:
+        p = Player.query.filter_by(mlb_id=mlb_id).first()
+        if p:
+            if team_id and p.team_id != team_id:
+                logger.info(f"[pitcher-match] {p.name} (mlb_id={mlb_id}) team {p.team_id} -> {team_id} (via mlb_id)")
+                p.team_id = team_id
+                p.active = True
+                db.session.commit()
+            return p
+
+    if not name:
+        return None
+
+    # 2. exact name + team
+    p = Player.query.filter_by(name=name, team_id=team_id).first()
+    if p:
+        return p
+
+    # 3. fuzzy last-name + team
+    last = name.split()[-1]
+    p = Player.query.filter(
+        Player.team_id == team_id,
+        Player.name.ilike(f"%{last}%"),
+        Player.position.in_(PITCHER_POSITIONS),
+    ).first()
+    if p:
+        return p
+
+    # 4. exact name globally (only if unique among pitchers)
+    candidates = Player.query.filter(
+        Player.name == name,
+        Player.position.in_(PITCHER_POSITIONS),
+    ).all()
+    if len(candidates) == 1:
+        p = candidates[0]
+        old = p.team_id
+        p.team_id = team_id
+        p.active = True
+        db.session.commit()
+        logger.info(f"[pitcher-match] {p.name} team {old} -> {team_id} (via global exact-name match)")
+        return p
+
+    # 5. fuzzy last-name globally (only if unique among pitchers)
+    candidates = Player.query.filter(
+        Player.name.ilike(f"%{last}%"),
+        Player.position.in_(PITCHER_POSITIONS),
+    ).all()
+    if len(candidates) == 1:
+        p = candidates[0]
+        old = p.team_id
+        p.team_id = team_id
+        p.active = True
+        db.session.commit()
+        logger.info(f"[pitcher-match] {p.name} team {old} -> {team_id} (via global fuzzy-name match for '{name}')")
+        return p
+
+    # 6. MLB API lookup_player (creates a new row when found uniquely)
+    try:
+        people = statsapi.lookup_player(name)
+    except Exception as e:
+        logger.warning(f"[pitcher-match] lookup_player({name!r}) failed: {e}")
+        people = []
+
+    pitcher_hits = []
+    for person in people:
+        pos = (person.get("primaryPosition") or {}).get("abbreviation", "")
+        if pos in PITCHER_POSITIONS or pos == "P":
+            pitcher_hits.append(person)
+
+    if len(pitcher_hits) == 1:
+        person = pitcher_hits[0]
+        new_mlb_id = person.get("id")
+        # Defensive: if a Player with this MLB ID already exists, prefer it
+        if new_mlb_id:
+            existing = Player.query.filter_by(mlb_id=new_mlb_id).first()
+            if existing:
+                if team_id and existing.team_id != team_id:
+                    existing.team_id = team_id
+                    existing.active = True
+                    db.session.commit()
+                    logger.info(f"[pitcher-match] {existing.name} team -> {team_id} (via MLB-API mlb_id collision)")
+                return existing
+        # Brand new player — create the row
+        position = (person.get("primaryPosition") or {}).get("abbreviation", "P")
+        throws   = (person.get("pitchHand") or {}).get("code") or "R"
+        bats     = (person.get("batSide") or {}).get("code") or "R"
+        new_player = Player(
+            mlb_id   = new_mlb_id,
+            name     = person.get("fullName", name),
+            team_id  = team_id,
+            position = position if position in PITCHER_POSITIONS else "SP",
+            throws   = throws,
+            bats     = bats,
+            active   = True,
+        )
+        db.session.add(new_player)
+        db.session.commit()
+        logger.info(f"[pitcher-match] Created new Player row: {new_player.name} "
+                    f"(mlb_id={new_mlb_id}, team={team_id}) via MLB API lookup")
+        return new_player
+
+    if len(pitcher_hits) > 1:
+        logger.info(f"[pitcher-match] {len(pitcher_hits)} ambiguous matches for {name!r} — declining to auto-match")
+
+    logger.warning(f"[pitcher-match] Could not resolve {name!r} (mlb_id={mlb_id}, team_id={team_id})")
+    return None
+
 
 def get_todays_schedule() -> list:
     """Fetch today's MLB schedule with game info."""
