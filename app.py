@@ -4693,6 +4693,28 @@ def admin_status():
     return jsonify(ADMIN_TASK_STATUS)
 
 
+@app.route("/admin/debug-game/<int:game_id>")
+@login_required
+def admin_debug_game(game_id):
+    """Diagnostic — dump key fields from a Game row."""
+    g = Game.query.get_or_404(game_id)
+    return jsonify({
+        "id": g.id,
+        "mlb_game_id": g.mlb_game_id,
+        "game_date": g.game_date.isoformat() if g.game_date else None,
+        "home_team_id": g.home_team_id,
+        "away_team_id": g.away_team_id,
+        "home_team": g.home_team.abbreviation if g.home_team else None,
+        "away_team": g.away_team.abbreviation if g.away_team else None,
+        "home_starter_id": g.home_starter_id,
+        "away_starter_id": g.away_starter_id,
+        "home_starter_name": g.home_starter.name if g.home_starter else None,
+        "away_starter_name": g.away_starter.name if g.away_starter else None,
+        "ballpark_id": g.ballpark_id,
+        "status": g.status,
+    })
+
+
 @app.route("/admin/debug-find-pitcher")
 @login_required
 def admin_debug_find_pitcher():
