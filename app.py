@@ -2372,6 +2372,16 @@ def _generate_recommendations(game: Game, sim: SimulationResult):
     OVER_MIN_EDGE  = max(MIN_EDGE_PCT, 9.0)
     UNDER_MIN_EDGE = max(MIN_EDGE_PCT, 9.0)
 
+    # ── OVER suppression (May 2026 backtest finding) ───────────────────────
+    # Splits-aware sims systematically over-project run scoring on the over
+    # side. Across combined 2025 main + 2025 F5 backtests with real lineups,
+    # OVER bets went 115-at-49.6% WR / −10.92% ROI while UNDER bets went
+    # 179-at-59.2% WR / +8.36% ROI. The model's edge on totals is one-sided.
+    # Skipping over recommendations preserves the under edge and removes the
+    # over drag. Flip to False to re-enable once we have a calibration story
+    # for over projections.
+    SUPPRESS_TOTALS_OVERS = True
+
     # Push probability: how often the total lands exactly on the line.
     # Non-zero only for whole-number lines (e.g. 8, 9).  A push returns your
     # stake, so it adds value — the effective win probability is higher than
@@ -2384,6 +2394,8 @@ def _generate_recommendations(game: Game, sim: SimulationResult):
             ("over",  sim.over_pct,  "over_price",  OVER_MIN_EDGE),
             ("under", sim.under_pct, "under_price", UNDER_MIN_EDGE),
         ]:
+            if side == "over" and SUPPRESS_TOTALS_OVERS:
+                continue  # over bets are -10.92% ROI in real-lineup backtests — see comment above
             if raw_prob < TOTALS_MIN_RAW:
                 continue  # below validated probability range — no data to support recommendation
             row, price = best_row_for(by_market.get("totals", []), field)
@@ -2457,12 +2469,16 @@ def _generate_recommendations(game: Game, sim: SimulationResult):
                     _save_recommendation(game, sim, row, side, "f5_moneyline", price, our_prob, analysis, bankroll, thr)
 
         # F5 Totals
+        # NOTE: Same OVER suppression as full-game totals. F5 overs went −7.53% ROI
+        # vs F5 unders at +7.64% ROI in 2025 real-lineup backtest.
         if sim.f5_over_pct is not None:
             f5_tot_rows = by_market.get("f5_totals", [])
             for side, raw_prob, field, min_e in [
                 ("f5_over",  sim.f5_over_pct,  "over_price",  OVER_MIN_EDGE),
                 ("f5_under", sim.f5_under_pct, "under_price", UNDER_MIN_EDGE),
             ]:
+                if side == "f5_over" and SUPPRESS_TOTALS_OVERS:
+                    continue
                 row, price = best_row_for(f5_tot_rows, field)
                 if row and price:
                     if price > MAX_UNDERDOG_ODDS:
@@ -5259,10 +5275,16 @@ def _quick_entry_analyze_inner():
                 under_prob  = round(float(_np.sum(totals < total_line) / n), 4)
 
                 TOTALS_MIN_RAW = 0.58
+                # Same OVER suppression as the main _generate_recommendations path.
+                # Splits-aware sims over-project run scoring; overs are -10.92% ROI
+                # in real-lineup backtests while unders are +8.36% ROI.
+                _SUPPRESS_OVERS = True
                 for side, our_raw, ml in [
                     ("over",  over_prob,  over_odds),
                     ("under", under_prob, under_odds),
                 ]:
+                    if side == "over" and _SUPPRESS_OVERS:
+                        continue
                     if our_raw < TOTALS_MIN_RAW:
                         continue
                     our_p = calibrate_prob(our_raw, "totals", side)
@@ -5320,10 +5342,15 @@ def _quick_entry_analyze_inner():
                 f5_ou = calculate_f5_over_under(
                     {"score_distribution": sim.score_distribution}, f5_total)
                 F5_TOTALS_MIN = 0.55
+                # Same OVER suppression as full-game totals (F5 overs at -7.53% ROI,
+                # F5 unders at +7.64% ROI in 2025 real-lineup backtest).
+                _SUPPRESS_F5_OVERS = True
                 for side, our_raw, ml in [
                     ("over",  f5_ou["over"],  f5_over),
                     ("under", f5_ou["under"], f5_under),
                 ]:
+                    if side == "over" and _SUPPRESS_F5_OVERS:
+                        continue
                     if our_raw < F5_TOTALS_MIN:
                         continue
                     a = analyze_bet(our_raw, ml, bankroll)
