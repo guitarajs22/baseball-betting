@@ -1762,36 +1762,64 @@ def _run_simulation_inner(game, game_id, season, home_lineup_rows, away_lineup_r
         away_catcher=away_catcher,
     )
 
+    # ── Hybrid sim: splits-ON drives moneyline/F5 ML/runline projections, ──
+    # splits-OFF drives totals/F5 totals projections.
+    # Backtest evidence (2024+2025 multi-market, real lineups):
+    #   ML:     splits-ON wins 2-for-2 (+24pp ROI in 2024, +14pp in 2025)
+    #   Totals: splits-ON loses 2-for-2 (−9pp ROI in 2024, −31pp in 2025)
+    # Building one PitcherProfile copy per starter with .splits=None and
+    # running a second 10k sim is ~10s extra compute per game.
     results = run_simulations(inputs, n=10000)
+
+    from dataclasses import replace as _dc_replace
+    from copy import copy as _copy
+    def _no_splits(pp):
+        if pp is None or getattr(pp, "splits", None) is None:
+            return pp
+        pp2 = _copy(pp); pp2.splits = None; return pp2
+    inputs_no_splits = _dc_replace(
+        inputs,
+        home_starter=_no_splits(home_starter),
+        away_starter=_no_splits(away_starter),
+    )
+    results_totals = run_simulations(inputs_no_splits, n=10000)
 
     sim = SimulationResult(
         game_id=game_id,
         num_simulations=10000,
+        # ML / F5 ML / cover / FI / RIFI — splits-ON sim (pre-computed fields)
         home_win_pct=results["home_win_pct"],
         away_win_pct=results["away_win_pct"],
-        home_avg_runs=results["home_avg_runs"],
-        away_avg_runs=results["away_avg_runs"],
-        total_avg_runs=results["total_avg_runs"],
-        total_std_dev=results["total_std_dev"],
-        score_distribution=results["score_distribution"],
+        # Run averages — use splits-OFF so downstream tooling that surfaces
+        # "expected runs" is consistent with the totals projections we'll bet.
+        home_avg_runs=results_totals["home_avg_runs"],
+        away_avg_runs=results_totals["away_avg_runs"],
+        total_avg_runs=results_totals["total_avg_runs"],
+        total_std_dev=results_totals["total_std_dev"],
+        # Stored distribution is splits-OFF since most downstream readers
+        # (api_ou_prob, bulk-recalc totals analysis, F5 totals recompute)
+        # use it to derive totals/F5-totals probs at runtime. F5 runline
+        # cover probs are pre-computed below from the splits-ON sim.
+        score_distribution=results_totals["score_distribution"],
         away_fi_score_pct=results.get("away_fi_score_pct"),
         home_fi_score_pct=results.get("home_fi_score_pct"),
         rifi_pct=results.get("rifi_pct"),
         f5_home_win_pct=results.get("f5_home_win_pct"),
         f5_away_win_pct=results.get("f5_away_win_pct"),
         f5_tie_pct=results.get("f5_tie_pct"),
-        f5_home_avg_runs=results.get("f5_home_avg_runs"),
-        f5_away_avg_runs=results.get("f5_away_avg_runs"),
+        f5_home_avg_runs=results_totals.get("f5_home_avg_runs"),
+        f5_away_avg_runs=results_totals.get("f5_away_avg_runs"),
     )
     db.session.add(sim)
     db.session.flush()
 
-    # Calculate O/U and run line vs current odds line
+    # Calculate O/U and run line vs current odds line.
+    # OVER/UNDER use the splits-OFF sim (results_totals).
     latest_odds = Odds.query.filter_by(game_id=game_id, market="totals").order_by(
         Odds.fetched_at.desc()
     ).first()
     if latest_odds and latest_odds.total_line:
-        ou = calculate_over_under(results, latest_odds.total_line)
+        ou = calculate_over_under(results_totals, latest_odds.total_line)
         sim.over_pct = ou["over"]
         sim.under_pct = ou["under"]
         sim.simulated_total_line = latest_odds.total_line
@@ -1810,28 +1838,31 @@ def _run_simulation_inner(game, game_id, season, home_lineup_rows, away_lineup_r
         sim.home_cover_runline_pct = round(1.0 - rl["away_minus_cover"], 4)
 
     # ── F5 O/U and run line (-0.5) vs manual F5 odds ──────────────────────
+    # F5 over/under uses splits-OFF sim (sim.score_distribution stored is
+    # splits-OFF, see above). F5 runline (-0.5) is a "who scores more"
+    # question — ML-adjacent — so it uses splits-ON.
     f5_odds = Odds.query.filter_by(game_id=game_id, market="f5_totals").order_by(
         Odds.fetched_at.desc()
     ).first()
-    if f5_odds and f5_odds.total_line and results.get("f5_home_win_pct") is not None:
+    if f5_odds and f5_odds.total_line and results_totals.get("f5_home_win_pct") is not None:
         import json as _json
-        dist = _json.loads(results["score_distribution"])
         import numpy as _np
-        hf5 = _np.array(dist["home_f5_scores"])
-        af5 = _np.array(dist["away_f5_scores"])
+        dist_t = _json.loads(results_totals["score_distribution"])
+        hf5 = _np.array(dist_t["home_f5_scores"])
+        af5 = _np.array(dist_t["away_f5_scores"])
         f5_totals = hf5 + af5
         nf5 = len(f5_totals)
         sim.f5_over_pct  = round(float(_np.sum(f5_totals > f5_odds.total_line) / nf5), 4)
         sim.f5_under_pct = round(float(_np.sum(f5_totals < f5_odds.total_line) / nf5), 4)
         sim.f5_simulated_total_line = f5_odds.total_line
 
-    # F5 runline (-0.5): just win outright (no ties count as cover)
+    # F5 runline (-0.5): just win outright (no ties count as cover) — splits-ON sim
     if results.get("f5_home_win_pct") is not None:
         import json as _json
-        dist = _json.loads(results["score_distribution"])
         import numpy as _np
-        hf5 = _np.array(dist["home_f5_scores"])
-        af5 = _np.array(dist["away_f5_scores"])
+        dist_ml = _json.loads(results["score_distribution"])
+        hf5 = _np.array(dist_ml["home_f5_scores"])
+        af5 = _np.array(dist_ml["away_f5_scores"])
         nf5 = len(hf5)
         sim.f5_home_cover_pct = round(float(_np.sum(hf5 > af5) / nf5), 4)
         sim.f5_away_cover_pct = round(float(_np.sum(af5 > hf5) / nf5), 4)
@@ -2372,15 +2403,13 @@ def _generate_recommendations(game: Game, sim: SimulationResult):
     OVER_MIN_EDGE  = max(MIN_EDGE_PCT, 9.0)
     UNDER_MIN_EDGE = max(MIN_EDGE_PCT, 9.0)
 
-    # ── OVER suppression (May 2026 backtest finding) ───────────────────────
-    # Splits-aware sims systematically over-project run scoring on the over
-    # side. Across combined 2025 main + 2025 F5 backtests with real lineups,
-    # OVER bets went 115-at-49.6% WR / −10.92% ROI while UNDER bets went
-    # 179-at-59.2% WR / +8.36% ROI. The model's edge on totals is one-sided.
-    # Skipping over recommendations preserves the under edge and removes the
-    # over drag. Flip to False to re-enable once we have a calibration story
-    # for over projections.
-    SUPPRESS_TOTALS_OVERS = True
+    # NOTE: OVER suppression was tried briefly (May 2026) when splits-on
+    # totals showed overs at -39.81% ROI / unders at +17.59%. Subsequent
+    # splits-OFF A/B (2025 main, real lineups, same seed) flipped the
+    # picture entirely:  overs +38.42% ROI / unders -1.18% — splits, not
+    # overs, were the actual problem. We now use the hybrid sim (splits-on
+    # for ML projections, splits-off for totals projections), so over recs
+    # come from the splits-off pass and are healthy. Suppression removed.
 
     # Push probability: how often the total lands exactly on the line.
     # Non-zero only for whole-number lines (e.g. 8, 9).  A push returns your
@@ -2394,8 +2423,6 @@ def _generate_recommendations(game: Game, sim: SimulationResult):
             ("over",  sim.over_pct,  "over_price",  OVER_MIN_EDGE),
             ("under", sim.under_pct, "under_price", UNDER_MIN_EDGE),
         ]:
-            if side == "over" and SUPPRESS_TOTALS_OVERS:
-                continue  # over bets are -10.92% ROI in real-lineup backtests — see comment above
             if raw_prob < TOTALS_MIN_RAW:
                 continue  # below validated probability range — no data to support recommendation
             row, price = best_row_for(by_market.get("totals", []), field)
@@ -2469,16 +2496,13 @@ def _generate_recommendations(game: Game, sim: SimulationResult):
                     _save_recommendation(game, sim, row, side, "f5_moneyline", price, our_prob, analysis, bankroll, thr)
 
         # F5 Totals
-        # NOTE: Same OVER suppression as full-game totals. F5 overs went −7.53% ROI
-        # vs F5 unders at +7.64% ROI in 2025 real-lineup backtest.
+        # NOTE: F5 totals also use the hybrid sim (splits-off pass).
         if sim.f5_over_pct is not None:
             f5_tot_rows = by_market.get("f5_totals", [])
             for side, raw_prob, field, min_e in [
                 ("f5_over",  sim.f5_over_pct,  "over_price",  OVER_MIN_EDGE),
                 ("f5_under", sim.f5_under_pct, "under_price", UNDER_MIN_EDGE),
             ]:
-                if side == "f5_over" and SUPPRESS_TOTALS_OVERS:
-                    continue
                 row, price = best_row_for(f5_tot_rows, field)
                 if row and price:
                     if price > MAX_UNDERDOG_ODDS:
@@ -5198,23 +5222,40 @@ def _quick_entry_analyze_inner():
                     home_bullpen=_bullpen(game.home_team_id),
                     away_bullpen=_bullpen(game.away_team_id),
                     park=park)
+                # Hybrid sim: splits-ON drives ML, splits-OFF drives totals.
+                # See same logic in run_simulation() above for backtest rationale.
                 sim_results = run_simulations(sim_inputs, n=10000)
+
+                from dataclasses import replace as _dc_replace
+                from copy import copy as _copy
+                def _no_splits(pp):
+                    if pp is None or getattr(pp, "splits", None) is None:
+                        return pp
+                    pp2 = _copy(pp); pp2.splits = None; return pp2
+                sim_inputs_no_splits = _dc_replace(
+                    sim_inputs,
+                    home_starter=_no_splits(hsp),
+                    away_starter=_no_splits(asp),
+                )
+                sim_results_totals = run_simulations(sim_inputs_no_splits, n=10000)
 
                 sim = SimulationResult(
                     game_id=game_id,
                     num_simulations=10000,
+                    # ML / F5 ML — splits-ON
                     home_win_pct=sim_results["home_win_pct"],
                     away_win_pct=sim_results["away_win_pct"],
-                    home_avg_runs=sim_results["home_avg_runs"],
-                    away_avg_runs=sim_results["away_avg_runs"],
-                    total_avg_runs=sim_results["total_avg_runs"],
-                    total_std_dev=sim_results["total_std_dev"],
-                    score_distribution=sim_results["score_distribution"],
                     f5_home_win_pct=sim_results.get("f5_home_win_pct"),
                     f5_away_win_pct=sim_results.get("f5_away_win_pct"),
                     f5_tie_pct=sim_results.get("f5_tie_pct"),
-                    f5_home_avg_runs=sim_results.get("f5_home_avg_runs"),
-                    f5_away_avg_runs=sim_results.get("f5_away_avg_runs"),
+                    # Run averages + stored distribution — splits-OFF (totals)
+                    home_avg_runs=sim_results_totals["home_avg_runs"],
+                    away_avg_runs=sim_results_totals["away_avg_runs"],
+                    total_avg_runs=sim_results_totals["total_avg_runs"],
+                    total_std_dev=sim_results_totals["total_std_dev"],
+                    score_distribution=sim_results_totals["score_distribution"],
+                    f5_home_avg_runs=sim_results_totals.get("f5_home_avg_runs"),
+                    f5_away_avg_runs=sim_results_totals.get("f5_away_avg_runs"),
                 )
                 db.session.add(sim)
                 db.session.commit()
@@ -5275,16 +5316,10 @@ def _quick_entry_analyze_inner():
                 under_prob  = round(float(_np.sum(totals < total_line) / n), 4)
 
                 TOTALS_MIN_RAW = 0.58
-                # Same OVER suppression as the main _generate_recommendations path.
-                # Splits-aware sims over-project run scoring; overs are -10.92% ROI
-                # in real-lineup backtests while unders are +8.36% ROI.
-                _SUPPRESS_OVERS = True
                 for side, our_raw, ml in [
                     ("over",  over_prob,  over_odds),
                     ("under", under_prob, under_odds),
                 ]:
-                    if side == "over" and _SUPPRESS_OVERS:
-                        continue
                     if our_raw < TOTALS_MIN_RAW:
                         continue
                     our_p = calibrate_prob(our_raw, "totals", side)
@@ -5342,15 +5377,10 @@ def _quick_entry_analyze_inner():
                 f5_ou = calculate_f5_over_under(
                     {"score_distribution": sim.score_distribution}, f5_total)
                 F5_TOTALS_MIN = 0.55
-                # Same OVER suppression as full-game totals (F5 overs at -7.53% ROI,
-                # F5 unders at +7.64% ROI in 2025 real-lineup backtest).
-                _SUPPRESS_F5_OVERS = True
                 for side, our_raw, ml in [
                     ("over",  f5_ou["over"],  f5_over),
                     ("under", f5_ou["under"], f5_under),
                 ]:
-                    if side == "over" and _SUPPRESS_F5_OVERS:
-                        continue
                     if our_raw < F5_TOTALS_MIN:
                         continue
                     a = analyze_bet(our_raw, ml, bankroll)
