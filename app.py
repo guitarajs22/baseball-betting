@@ -1797,16 +1797,21 @@ def _run_simulation_inner(game, game_id, season, home_lineup_rows, away_lineup_r
         total_avg_runs=results_totals["total_avg_runs"],
         total_std_dev=results_totals["total_std_dev"],
         # Stored distribution is splits-OFF since most downstream readers
-        # (api_ou_prob, bulk-recalc totals analysis, F5 totals recompute)
-        # use it to derive totals/F5-totals probs at runtime. F5 runline
-        # cover probs are pre-computed below from the splits-ON sim.
+        # (api_ou_prob, bulk-recalc totals analysis, F5 totals recompute, F5
+        # runline cover) use it to derive market-specific probs. F5 splits-OFF
+        # is preferred per 2025 backtest (F5 ML +15.17% vs +12.84% splits-ON).
         score_distribution=results_totals["score_distribution"],
+        # First-inning runs and RIFI — splits-ON (untested but theoretically
+        # benefits from same starter-handedness signal as full-game ML).
         away_fi_score_pct=results.get("away_fi_score_pct"),
         home_fi_score_pct=results.get("home_fi_score_pct"),
         rifi_pct=results.get("rifi_pct"),
-        f5_home_win_pct=results.get("f5_home_win_pct"),
-        f5_away_win_pct=results.get("f5_away_win_pct"),
-        f5_tie_pct=results.get("f5_tie_pct"),
+        # F5 ML / F5 RL — splits-OFF (2025 backtest showed splits-OFF wins
+        # F5 ML +2.33pp ROI; F5 markets are starter-only so the platoon
+        # overshoot we hedge against on totals also leaks into F5 ML).
+        f5_home_win_pct=results_totals.get("f5_home_win_pct"),
+        f5_away_win_pct=results_totals.get("f5_away_win_pct"),
+        f5_tie_pct=results_totals.get("f5_tie_pct"),
         f5_home_avg_runs=results_totals.get("f5_home_avg_runs"),
         f5_away_avg_runs=results_totals.get("f5_away_avg_runs"),
     )
@@ -1856,13 +1861,14 @@ def _run_simulation_inner(game, game_id, season, home_lineup_rows, away_lineup_r
         sim.f5_under_pct = round(float(_np.sum(f5_totals < f5_odds.total_line) / nf5), 4)
         sim.f5_simulated_total_line = f5_odds.total_line
 
-    # F5 runline (-0.5): just win outright (no ties count as cover) — splits-ON sim
-    if results.get("f5_home_win_pct") is not None:
+    # F5 runline (-0.5): just win outright (no ties count as cover) — splits-OFF sim
+    # (matches F5 ML choice above; backtest favored splits-OFF for all F5 markets).
+    if results_totals.get("f5_home_win_pct") is not None:
         import json as _json
         import numpy as _np
-        dist_ml = _json.loads(results["score_distribution"])
-        hf5 = _np.array(dist_ml["home_f5_scores"])
-        af5 = _np.array(dist_ml["away_f5_scores"])
+        dist_f5rl = _json.loads(results_totals["score_distribution"])
+        hf5 = _np.array(dist_f5rl["home_f5_scores"])
+        af5 = _np.array(dist_f5rl["away_f5_scores"])
         nf5 = len(hf5)
         sim.f5_home_cover_pct = round(float(_np.sum(hf5 > af5) / nf5), 4)
         sim.f5_away_cover_pct = round(float(_np.sum(af5 > hf5) / nf5), 4)
@@ -5242,12 +5248,13 @@ def _quick_entry_analyze_inner():
                 sim = SimulationResult(
                     game_id=game_id,
                     num_simulations=10000,
-                    # ML / F5 ML — splits-ON
+                    # Full-game ML — splits-ON
                     home_win_pct=sim_results["home_win_pct"],
                     away_win_pct=sim_results["away_win_pct"],
-                    f5_home_win_pct=sim_results.get("f5_home_win_pct"),
-                    f5_away_win_pct=sim_results.get("f5_away_win_pct"),
-                    f5_tie_pct=sim_results.get("f5_tie_pct"),
+                    # F5 ML — splits-OFF (2025 F5 backtest: +2.33pp ROI vs splits-ON)
+                    f5_home_win_pct=sim_results_totals.get("f5_home_win_pct"),
+                    f5_away_win_pct=sim_results_totals.get("f5_away_win_pct"),
+                    f5_tie_pct=sim_results_totals.get("f5_tie_pct"),
                     # Run averages + stored distribution — splits-OFF (totals)
                     home_avg_runs=sim_results_totals["home_avg_runs"],
                     away_avg_runs=sim_results_totals["away_avg_runs"],

@@ -109,6 +109,7 @@ def run_f5_backtest(
     output_csv:         str = "backtest/f5_results.csv",
     lineup_cache_file:  str = "backtest/lineup_cache.json",
     skip_spring_training: bool = True,
+    no_pitcher_splits:  bool = False,
 ):
     from data.mlb_api import get_historical_schedule, get_f5_result
     from database.schema import Team, Player, PlayerStats, PitchingStats
@@ -237,6 +238,9 @@ def run_f5_backtest(
         # Attach IP-weighted platoon splits from the same rotation members.
         # Mirrors the production app behavior — the simulator picks vs_LHB
         # or vs_RHB rates per PA based on the batter's hand.
+        # Gated by --no-pitcher-splits flag for A/B testing.
+        if no_pitcher_splits:
+            return profile
         rotation_player_ids = [s.player_id for s in rotation]
         rotation_splits = {}
         for bat_hand, db_split in [("L", "vs_LHB"), ("R", "vs_RHB")]:
@@ -343,6 +347,9 @@ def run_f5_backtest(
             stamina=stats.ip / max(stats.games_started, 1) if stats.games_started else 6.0,
         )
         # Attach platoon splits for this specific pitcher (matches production behavior).
+        # Gated by --no-pitcher-splits flag for A/B testing.
+        if no_pitcher_splits:
+            return profile
         splits = {}
         for bat_hand, db_split in [("L", "vs_LHB"), ("R", "vs_RHB")]:
             split_row = (PitchingStats.query
@@ -753,6 +760,8 @@ Examples:
     parser.add_argument("--output",          default="backtest/f5_results_2025_v1.csv")
     parser.add_argument("--cache",           default="backtest/lineup_cache.json")
     parser.add_argument("--include-spring",  action="store_true")
+    parser.add_argument("--no-pitcher-splits", action="store_true",
+                        help="Disable pitcher vs_LHB / vs_RHB splits. Use for A/B testing the hybrid setup.")
     args = parser.parse_args()
 
     from app import app, init_db
@@ -772,4 +781,5 @@ Examples:
             output_csv=args.output,
             lineup_cache_file=args.cache,
             skip_spring_training=not args.include_spring,
+            no_pitcher_splits=args.no_pitcher_splits,
         )
