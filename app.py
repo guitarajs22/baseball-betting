@@ -32,7 +32,7 @@ from models.simulation import (run_simulations, calculate_over_under, calculate_
                                  build_pitcher_split_rates)
 from models.kelly import analyze_bet, american_to_implied_prob, american_to_decimal
 from models.calibration import calibrate_prob
-from data.mlb_api import get_game_result, get_first_inning_result
+from data.mlb_api import get_game_result, get_first_inning_result, get_f5_result
 import scheduler as sched
 
 # ---------------------------------------------------------------------------
@@ -2612,6 +2612,21 @@ def _snapshot_closing_odds(game: Game) -> int:
             if not totals_row:
                 return None
             return totals_row.over_price if side == "over" else totals_row.under_price
+        elif bt == "f5_moneyline":
+            f5_ml = Odds.query.filter_by(game_id=game.id, market="f5_moneyline").order_by(
+                Odds.fetched_at.desc()).first()
+            if not f5_ml:
+                return None
+            if side == "f5_home":
+                return f5_ml.home_price
+            if side == "f5_away":
+                return f5_ml.away_price
+        elif bt == "f5_totals":
+            f5_tot = Odds.query.filter_by(game_id=game.id, market="f5_totals").order_by(
+                Odds.fetched_at.desc()).first()
+            if not f5_tot:
+                return None
+            return f5_tot.over_price if side == "f5_over" else f5_tot.under_price
         return None
 
     def _clv_cents_calc(open_price: int, close_price: int) -> float:
@@ -2679,6 +2694,21 @@ def _resolve_bets(game: Game) -> int:
             if not totals_row:
                 return None
             return totals_row.over_price if side == "over" else totals_row.under_price
+        elif bt == "f5_moneyline":
+            f5_ml = Odds.query.filter_by(game_id=game.id, market="f5_moneyline").order_by(
+                Odds.fetched_at.desc()).first()
+            if not f5_ml:
+                return None
+            if side == "f5_home":
+                return f5_ml.home_price
+            if side == "f5_away":
+                return f5_ml.away_price
+        elif bt == "f5_totals":
+            f5_tot = Odds.query.filter_by(game_id=game.id, market="f5_totals").order_by(
+                Odds.fetched_at.desc()).first()
+            if not f5_tot:
+                return None
+            return f5_tot.over_price if side == "f5_over" else f5_tot.under_price
         return None
 
     def _clv_cents(open_price: int, close_price: int) -> float:
@@ -2702,6 +2732,18 @@ def _resolve_bets(game: Game) -> int:
         BetRecommendation.won == None,          # noqa: E711 — SQLAlchemy IS NULL
         BetRecommendation.profit_loss == None,  # noqa: E711 — skip pushes (pl=0.0)
     ).all()
+
+    # Fetch F5 (first-5-innings) result once per game — used by all F5 branches.
+    # Falls back to None if the game didn't complete 5 innings (rain shortened).
+    _f5_cached = None
+    _f5_fetched = False
+    def _f5():
+        nonlocal _f5_cached, _f5_fetched
+        if not _f5_fetched:
+            _f5_fetched = True
+            if game.mlb_game_id:
+                _f5_cached = get_f5_result(game.mlb_game_id)
+        return _f5_cached
 
     resolved = 0
     for rec in recs:
@@ -2782,6 +2824,57 @@ def _resolve_bets(game: Game) -> int:
                     won = (away - home >= 2)
                 elif is_home_side:
                     won = (away - home < 2)
+
+        elif rec.bet_type == "f5_moneyline":
+            # F5 ML: side stored as "f5_home" or "f5_away". Tie after 5 = push.
+            f5 = _f5()
+            if f5 is not None:
+                side_lc = (rec.side or "").lower()
+                if f5["tied"]:
+                    is_push = True
+                elif side_lc == "f5_home":
+                    won = f5["home_leads"]
+                elif side_lc == "f5_away":
+                    won = f5["away_leads"]
+
+        elif rec.bet_type == "f5_totals":
+            # F5 totals: side stored as "f5_over 4.5" or "f5_under 4.5". Grade against
+            # the embedded line — same convention as full-game totals.
+            f5 = _f5()
+            if f5 is not None:
+                parts = (rec.side or "").lower().split()
+                ou_dir = parts[0] if parts else ""     # "f5_over" or "f5_under"
+                line_to_use = None
+                if len(parts) >= 2:
+                    try:
+                        line_to_use = float(parts[1])
+                    except ValueError:
+                        pass
+                # Fallback to the latest f5_totals row's line if not embedded
+                if line_to_use is None:
+                    f5_totals_row = Odds.query.filter_by(
+                        game_id=rec.game_id, market="f5_totals"
+                    ).order_by(Odds.fetched_at.desc()).first()
+                    if f5_totals_row and f5_totals_row.total_line:
+                        line_to_use = f5_totals_row.total_line
+                if line_to_use is not None:
+                    if f5["total"] == line_to_use:
+                        is_push = True
+                    elif ou_dir == "f5_over":
+                        won = (f5["total"] > line_to_use)
+                    elif ou_dir == "f5_under":
+                        won = (f5["total"] < line_to_use)
+
+        elif rec.bet_type == "f5_runline":
+            # F5 RL is -0.5 (must win outright in F5, no ties count as cover).
+            # Side stored as "f5_home_rl" or "f5_away_rl".
+            f5 = _f5()
+            if f5 is not None:
+                side_lc = (rec.side or "").lower()
+                if side_lc == "f5_home_rl":
+                    won = f5["home_leads"]  # tie loses; only outright win covers -0.5
+                elif side_lc == "f5_away_rl":
+                    won = f5["away_leads"]
 
         away_abbr = game.away_team.abbreviation if game.away_team else "?"
         home_abbr = game.home_team.abbreviation if game.home_team else "?"
@@ -3188,6 +3281,21 @@ def _apply_model_stats(rec: BetRecommendation) -> bool:
             model_prob = sim.rifi_pct
         elif ou == "nrfi" and sim.rifi_pct is not None:
             model_prob = 1.0 - sim.rifi_pct
+    elif rec.bet_type == "f5_moneyline":
+        if ou == "f5_home" and sim.f5_home_win_pct is not None:
+            model_prob = sim.f5_home_win_pct
+        elif ou == "f5_away" and sim.f5_away_win_pct is not None:
+            model_prob = sim.f5_away_win_pct
+    elif rec.bet_type == "f5_totals":
+        if ou == "f5_over" and sim.f5_over_pct is not None:
+            model_prob = sim.f5_over_pct
+        elif ou == "f5_under" and sim.f5_under_pct is not None:
+            model_prob = sim.f5_under_pct
+    elif rec.bet_type == "f5_runline":
+        if ou == "f5_home_rl" and sim.f5_home_cover_pct is not None:
+            model_prob = sim.f5_home_cover_pct
+        elif ou == "f5_away_rl" and sim.f5_away_cover_pct is not None:
+            model_prob = sim.f5_away_cover_pct
 
     if model_prob is None:
         return False
