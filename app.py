@@ -3508,11 +3508,14 @@ def settle_games():
         settled += 1
 
     # Also catch games already marked final but whose bets were never graded
-    # (e.g. if a previous settle attempt crashed before _resolve_bets ran).
+    # (e.g. if a previous settle attempt crashed before _resolve_bets ran, or
+    # if the bet's market wasn't supported at the time — F5 recs pre-May 2026
+    # sat pending because the grading loop had no F5 branch until then).
+    # Include both placed AND unplaced recs — grading unplaced recs updates
+    # stats tracking even though no bankroll movement occurs.
     ungraded_ids = (
         db.session.query(BetRecommendation.game_id)
         .filter(
-            BetRecommendation.placed == True,        # noqa: E712
             BetRecommendation.won == None,           # noqa: E711
             BetRecommendation.profit_loss == None,   # noqa: E711
         )
