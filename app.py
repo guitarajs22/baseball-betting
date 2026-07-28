@@ -3982,6 +3982,41 @@ def api_recalculate_recs():
     })
 
 
+@app.route("/debug/bet/<int:bet_id>")
+@login_required
+def debug_bet(bet_id):
+    """TEMP: dump a bet's state + attempt F5 grading dry-run to diagnose."""
+    rec = BetRecommendation.query.get(bet_id)
+    if not rec:
+        return jsonify({"error": "no such bet"}), 404
+    game = rec.game
+    out = {
+        "bet_id":            rec.id,
+        "game_id":           rec.game_id,
+        "bet_type":          rec.bet_type,
+        "side":              rec.side,
+        "placed":            rec.placed,
+        "is_manual":         rec.is_manual,
+        "won":               rec.won,
+        "profit_loss":       rec.profit_loss,
+        "price":             rec.price,
+        "actual_bet_size":   rec.actual_bet_size,
+        "recommended_bet":   rec.recommended_bet,
+        "game_status":       game.status if game else None,
+        "game_mlb_id":       game.mlb_game_id if game else None,
+        "game_home_score":   game.home_score if game else None,
+        "game_away_score":   game.away_score if game else None,
+    }
+    # Try F5 result fetch if applicable
+    if rec.bet_type and rec.bet_type.startswith("f5") and game and game.mlb_game_id:
+        try:
+            f5 = get_f5_result(game.mlb_game_id)
+            out["f5_result"] = f5
+        except Exception as e:
+            out["f5_result_error"] = f"{type(e).__name__}: {e}"
+    return jsonify(out)
+
+
 @app.route("/debug/odds")
 @login_required
 def debug_odds():
