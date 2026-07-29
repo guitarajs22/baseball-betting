@@ -3982,6 +3982,27 @@ def api_recalculate_recs():
     })
 
 
+@app.route("/debug/games-on/<date_str>")
+@login_required
+def debug_games_on(date_str):
+    """TEMP: list all Game rows for a date, so DH pairs are visible."""
+    try:
+        gd = date.fromisoformat(date_str)
+    except ValueError:
+        return jsonify({"error": "bad date"}), 400
+    games = Game.query.filter_by(game_date=gd).order_by(Game.home_team_id, Game.game_number, Game.id).all()
+    out = [{
+        "id":               g.id,
+        "mlb_game_id":      g.mlb_game_id,
+        "matchup":          f"{g.away_team.abbreviation}@{g.home_team.abbreviation}" if g.away_team and g.home_team else "?",
+        "game_number":      g.game_number,
+        "is_doubleheader":  g.is_doubleheader,
+        "status":           g.status,
+        "game_time_utc":    g.game_time_utc.isoformat() if g.game_time_utc else None,
+    } for g in games]
+    return jsonify({"date": date_str, "count": len(games), "games": out})
+
+
 @app.route("/debug/bet/<int:bet_id>")
 @login_required
 def debug_bet(bet_id):
