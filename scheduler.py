@@ -109,6 +109,31 @@ def run_import_games(app, target_date: Optional[date] = None) -> dict:
                 elif mlb_status in ("Postponed", "Cancelled") and existing_game.status not in ("postponed", "cancelled"):
                     existing_game.status = mlb_status.lower()
                     updated_fields.append("status")
+                elif (mlb_status not in ("Postponed", "Cancelled")
+                      and existing_game.status in ("postponed", "cancelled")):
+                    # Was postponed, now un-postponed on the same date
+                    # (common for doubleheader-makeup flow).
+                    existing_game.status = "scheduled"
+                    updated_fields.append("un-postponed")
+
+                # Doubleheader tracking: MLB may re-assign game_num after a
+                # postponement. Always sync so downstream DH detection works.
+                new_game_num = int(g.get("game_num", 1) or 1)
+                if (existing_game.game_number or 1) != new_game_num:
+                    existing_game.game_number = new_game_num
+                    updated_fields.append("game_number")
+
+                # Always sync first-pitch time — postponed / rescheduled games
+                # get new times, and DH game 2 differs from game 1.
+                raw_dt = g.get("game_datetime")
+                if raw_dt:
+                    try:
+                        new_time = datetime.strptime(raw_dt, "%Y-%m-%dT%H:%M:%SZ")
+                        if existing_game.game_time_utc != new_time:
+                            existing_game.game_time_utc = new_time
+                            updated_fields.append("game_time")
+                    except ValueError:
+                        pass
 
                 # Re-resolve ballpark for existing games — corrects games imported
                 # before an override was added, or when MLB swaps a venue late.
@@ -123,12 +148,6 @@ def run_import_games(app, target_date: Optional[date] = None) -> dict:
                                 f"(venue: {g.get('venue_name')}, override={used_override})")
 
                 if updated_fields:
-                    raw_dt = g.get("game_datetime")
-                    if raw_dt:
-                        try:
-                            existing_game.game_time_utc = datetime.strptime(raw_dt, "%Y-%m-%dT%H:%M:%SZ")
-                        except ValueError:
-                            pass
                     imported += 1
                 else:
                     skipped += 1

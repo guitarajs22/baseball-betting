@@ -3773,13 +3773,30 @@ def import_games():
             elif mlb_status in ("Postponed", "Cancelled") and existing_game.status not in ("postponed", "cancelled"):
                 existing_game.status = mlb_status.lower()
                 updated_fields.append("status")
+            elif (mlb_status not in ("Postponed", "Cancelled")
+                  and existing_game.status in ("postponed", "cancelled")):
+                # Was postponed, now un-postponed on the same date (common for
+                # doubleheader-makeup: game gets re-activated without a date move).
+                existing_game.status = "scheduled"
+                updated_fields.append("un-postponed")
 
-            # Update game time if it changed (postponed games often get a new first-pitch time)
+            # Doubleheader tracking: MLB may re-assign game_num after a postponement
+            # (yesterday's postponed game becomes today's Game 2 of a DH). Always
+            # sync so downstream DH detection + display are correct.
+            new_game_num = int(g.get("game_num", 1) or 1)
+            if (existing_game.game_number or 1) != new_game_num:
+                existing_game.game_number = new_game_num
+                updated_fields.append("game_number")
+
+            # Always sync first-pitch time — postponed / rescheduled games get new
+            # times, and DH game 2 obviously has a different start than game 1.
             raw_dt = g.get("game_datetime")
-            if raw_dt and updated_fields:
+            if raw_dt:
                 try:
                     new_time = datetime.strptime(raw_dt, "%Y-%m-%dT%H:%M:%SZ")
-                    existing_game.game_time_utc = new_time
+                    if existing_game.game_time_utc != new_time:
+                        existing_game.game_time_utc = new_time
+                        updated_fields.append("game_time")
                 except ValueError:
                     pass
 
