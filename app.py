@@ -4516,13 +4516,15 @@ def bankroll():
 
     # Bet performance stats
     all_placed = BetRecommendation.query.filter_by(placed=True).all()
-    graded     = [b for b in all_placed if b.won is not None]
-    wins       = [b for b in graded if b.won]
-    losses     = [b for b in graded if not b.won]
-    total_pl      = sum(b.profit_loss or 0 for b in all_placed if b.profit_loss is not None)
-    total_wagered = sum((b.actual_bet_size or b.recommended_bet or 0) for b in graded)
+    graded_wl  = [b for b in all_placed if b.won is not None]                            # win or loss
+    pushed     = [b for b in all_placed if b.won is None and b.profit_loss is not None]  # push
+    wins       = [b for b in graded_wl if b.won]
+    losses     = [b for b in graded_wl if not b.won]
+    total_pl      = sum(b.profit_loss or 0 for b in (graded_wl + pushed))
+    total_wagered = sum((b.actual_bet_size or b.recommended_bet or 0) for b in (graded_wl + pushed))
     roi           = (total_pl / total_wagered * 100) if total_wagered > 0 else 0
-    pending_count = len([b for b in all_placed if b.won is None])
+    # Exclude pushes from "pending" — pushes have won=None + profit_loss=0
+    pending_count = len([b for b in all_placed if b.won is None and b.profit_loss is None])
 
     # Bankroll chart data (chronological)
     chart_history = BankrollLog.query.order_by(BankrollLog.date.asc()).all()
@@ -4634,22 +4636,34 @@ def bets_page():
     elif filter_type == "lost":
         query = query.filter(BetRecommendation.placed == True,
                              BetRecommendation.won == False)      # noqa: E712
-    elif filter_type == "pending":
+    elif filter_type == "push":
+        # Push: graded (profit_loss set to 0) but no win/loss — bankroll neutral
         query = query.filter(BetRecommendation.placed == True,
-                             BetRecommendation.won == None)       # noqa: E711
+                             BetRecommendation.won == None,       # noqa: E711
+                             BetRecommendation.profit_loss == 0.0)
+    elif filter_type == "pending":
+        # Truly pending: not yet graded (both won AND profit_loss are NULL).
+        # Excludes pushes, which have won=None but profit_loss=0.
+        query = query.filter(BetRecommendation.placed == True,
+                             BetRecommendation.won == None,       # noqa: E711
+                             BetRecommendation.profit_loss == None)  # noqa: E711
     # "all" — no extra filter
 
     bets = query.order_by(BetRecommendation.created_at.desc()).all()
 
     # Global stats (all placed bets, not just the filtered view)
     all_placed    = BetRecommendation.query.filter_by(placed=True).all()
-    graded        = [b for b in all_placed if b.won is not None]
-    wins          = [b for b in graded if b.won]
-    losses        = [b for b in graded if not b.won]
-    total_pl      = sum(b.profit_loss or 0 for b in all_placed if b.profit_loss is not None)
-    total_wagered = sum((b.actual_bet_size or b.recommended_bet or 0) for b in graded)
+    graded_wl     = [b for b in all_placed if b.won is not None]   # win or loss
+    pushed        = [b for b in all_placed if b.won is None and b.profit_loss is not None]  # push
+    wins          = [b for b in graded_wl if b.won]
+    losses        = [b for b in graded_wl if not b.won]
+    total_pl      = sum(b.profit_loss or 0 for b in (graded_wl + pushed))
+    # Total wagered includes pushes — the stake was risked even though it came back
+    total_wagered = sum((b.actual_bet_size or b.recommended_bet or 0) for b in (graded_wl + pushed))
     roi           = (total_pl / total_wagered * 100) if total_wagered > 0 else 0
-    pending_count = len([b for b in all_placed if b.won is None])
+    # Pending count excludes pushes (won=None + profit_loss set = push, not pending)
+    pending_count = len([b for b in all_placed if b.won is None and b.profit_loss is None])
+    push_count    = len(pushed)
 
     # Build a game lookup map so the template can show team abbreviations
     game_ids = list({b.game_id for b in bets})
@@ -4677,6 +4691,7 @@ def bets_page():
         roi=roi,
         total_wagered=total_wagered,
         pending=pending_count,
+        push_count=push_count,
         manual_games=manual_games,
     )
 

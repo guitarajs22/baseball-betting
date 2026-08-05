@@ -62,13 +62,15 @@
 
 <!-- Filter Tabs -->
 <ul class="nav nav-tabs mb-3">
-  {% for f, label in [('placed','All Placed'),('won','Won'),('lost','Lost'),('pending','Pending'),('all','All Recs')] %}
+  {% for f, label in [('placed','All Placed'),('won','Won'),('lost','Lost'),('push','Push'),('pending','Pending'),('all','All Recs')] %}
   <li class="nav-item">
     <a class="nav-link {% if filter_type == f %}active{% else %}text-muted{% endif %}"
        href="{{ url_for('bets_page', filter=f) }}">
       {{ label }}
       {% if f == 'pending' and pending > 0 %}
         <span class="badge bg-warning ms-1">{{ pending }}</span>
+      {% elif f == 'push' and push_count and push_count > 0 %}
+        <span class="badge bg-secondary ms-1">{{ push_count }}</span>
       {% endif %}
     </a>
   </li>
@@ -273,6 +275,8 @@
     No winning bets recorded yet.
   {% elif filter_type == 'lost' %}
     No losing bets recorded yet.
+  {% elif filter_type == 'push' %}
+    No push bets recorded yet.
   {% elif filter_type == 'pending' %}
     All placed bets have been graded — nothing pending.
   {% else %}
