@@ -27,6 +27,8 @@ SCHEDULER_LOG: dict = {
     "odds":         {"last_run": None, "status": None, "detail": "Never run", "next_run": None},
     "weather":      {"last_run": None, "status": None, "detail": "Never run", "next_run": None},
     "umpires":      {"last_run": None, "status": None, "detail": "Never run", "next_run": None},
+    "rosters":      {"last_run": None, "status": None, "detail": "Never run", "next_run": None},
+    "settle":       {"last_run": None, "status": None, "detail": "Never run", "next_run": None},
 }
 
 _scheduler: Optional[BackgroundScheduler] = None
@@ -647,6 +649,92 @@ def _job_odds(app) -> None:
         logger.error(f"[scheduler] odds error: {e}")
 
 
+# ── Job 5: Sync 26-man rosters + handedness ────────────────────────────────
+# Pulls each team's active roster from the MLB API (free, no key required).
+# Catches new callups, DFAs, and updated bat/throw hand designations.
+# Skips pitching stats — those come from the weekly FanGraphs CSV import.
+
+def _job_rosters(app) -> None:
+    logger.info("[scheduler] rosters: starting")
+    try:
+        from update_rosters import sync_rosters, sync_handedness
+        from datetime import date as _date
+        with app.app_context():
+            season = _date.today().year
+            r = sync_rosters(season)
+            h = sync_handedness()
+        # Summaries returned by the sync functions are dicts of counts
+        detail = f"rosters: {r} · handedness: {h}"
+        _log("rosters", "ok", detail)
+        logger.info(f"[scheduler] rosters: {detail}")
+    except Exception as e:
+        _log("rosters", "error", str(e))
+        logger.error(f"[scheduler] rosters error: {e}")
+
+
+# ── Job 6: Auto-settle finished games ──────────────────────────────────────
+# Same as clicking /games/settle: pulls scores from MLB API for any games
+# marked non-final, grades bets, and sweeps orphaned pending recs on final
+# games. Fully idempotent — safe to run repeatedly.
+
+def _job_settle(app) -> None:
+    logger.info("[scheduler] settle: starting")
+    try:
+        from datetime import date as _date
+        with app.app_context():
+            from database.schema import Game, BetRecommendation
+            from data.mlb_api import get_game_result
+            # Same logic as /games/settle route
+            games = Game.query.filter(
+                Game.status != "final",
+                Game.mlb_game_id != None,        # noqa: E711
+                Game.game_date <= _date.today(),
+            ).all()
+            settled = skipped = 0
+            for game in games:
+                result = get_game_result(game.mlb_game_id)
+                if not result:
+                    continue
+                if result.get("status") not in {"Final", "Game Over", "Completed Early"}:
+                    skipped += 1
+                    continue
+                game.home_score = result["home_score"]
+                game.away_score = result["away_score"]
+                game.total_runs = result["home_score"] + result["away_score"]
+                game.home_win   = result["home_score"] > result["away_score"]
+                game.status     = "final"
+                from app import db, _resolve_bets
+                db.session.commit()
+                _resolve_bets(game)
+                settled += 1
+            # Orphan sweep — any final game still with pending recs
+            from app import db, _resolve_bets
+            ungraded_ids = (
+                db.session.query(BetRecommendation.game_id)
+                .filter(BetRecommendation.won == None,        # noqa: E711
+                        BetRecommendation.profit_loss == None)  # noqa: E711
+                .distinct()
+                .all()
+            )
+            if ungraded_ids:
+                id_list = [row[0] for row in ungraded_ids]
+                orphaned = Game.query.filter(
+                    Game.id.in_(id_list),
+                    Game.status == "final",
+                    Game.home_score != None,   # noqa: E711
+                    Game.away_score != None,   # noqa: E711
+                ).all()
+                for g in orphaned:
+                    _resolve_bets(g)
+                    settled += 1
+        detail = f"Settled {settled} game(s), {skipped} still in progress"
+        _log("settle", "ok", detail)
+        logger.info(f"[scheduler] settle: {detail}")
+    except Exception as e:
+        _log("settle", "error", str(e))
+        logger.error(f"[scheduler] settle error: {e}")
+
+
 # ── Scheduler init ──────────────────────────────────────────────────────────
 
 def init_scheduler(app) -> None:
@@ -698,8 +786,30 @@ def init_scheduler(app) -> None:
         misfire_grace_time=3600,
     )
 
+    # Sync 26-man rosters + handedness daily at 7:00 AM (before day games).
+    # Free (MLB Stats API only). Catches new callups (e.g. WSH@MIA / Snelling case).
+    _scheduler.add_job(
+        lambda: _job_rosters(app),
+        CronTrigger(hour=7, minute=0),
+        id="rosters",
+        name="Sync rosters + handedness",
+        replace_existing=True,
+        misfire_grace_time=3600,
+    )
+
+    # Auto-settle finished games every 2 hours during typical MLB hours (16:00–02:00 UTC
+    # ≈ 12pm–10pm ET). Grades bets and updates bankroll for anything MLB has marked final.
+    _scheduler.add_job(
+        lambda: _job_settle(app),
+        CronTrigger(hour="16,18,20,22,0,2"),
+        id="settle",
+        name="Settle finished games",
+        replace_existing=True,
+        misfire_grace_time=1800,
+    )
+
     _scheduler.start()
-    logger.info(f"[scheduler] Started — import_games@20:00, odds@{_odds_interval_hours}h, weather@hourly, umpires@10:00")
+    logger.info(f"[scheduler] Started — import_games@20:00, odds@{_odds_interval_hours}h, weather@hourly, umpires@10:00, rosters@07:00, settle@2h")
 
     # Startup-fire: only weather (no API cost). Odds startup-fire is GATED —
     # off by default so Railway redeploys don't burn credits. Set
