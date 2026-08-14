@@ -3999,6 +3999,40 @@ def api_recalculate_recs():
     })
 
 
+@app.route("/debug/stats-freshness")
+@login_required
+def debug_stats_freshness():
+    """TEMP: show the latest updated_at + row counts for the DB's stat tables,
+    so we can verify a FanGraphs import / roster sync actually landed."""
+    from sqlalchemy import func as _sqlfunc
+    from database.schema import PlayerStats, PitchingStats, Player
+    year = date.today().year
+    def _latest(model, **filt):
+        r = model.query.filter_by(**filt).order_by(model.updated_at.desc()).first()
+        return r.updated_at.isoformat() if r and r.updated_at else None
+    def _rows(model, **filt):
+        return model.query.filter_by(**filt).count()
+
+    out = {
+        "current_year": year,
+        "batting_2026": {
+            "overall_rows":   _rows(PlayerStats, season=year, split="overall"),
+            "vs_LHP_rows":    _rows(PlayerStats, season=year, split="vs_LHP"),
+            "vs_RHP_rows":    _rows(PlayerStats, season=year, split="vs_RHP"),
+            "latest_update":  _latest(PlayerStats, season=year),
+        },
+        "pitching_2026": {
+            "SP_overall_rows": _rows(PitchingStats, season=year, role="SP", split="overall"),
+            "SP_vs_LHB_rows":  _rows(PitchingStats, season=year, role="SP", split="vs_LHB"),
+            "SP_vs_RHB_rows":  _rows(PitchingStats, season=year, role="SP", split="vs_RHB"),
+            "RP_overall_rows": _rows(PitchingStats, season=year, role="RP", split="overall"),
+            "latest_update":   _latest(PitchingStats, season=year),
+        },
+        "players_active": Player.query.filter_by(active=True).count(),
+    }
+    return jsonify(out)
+
+
 @app.route("/debug/games-on/<date_str>")
 @login_required
 def debug_games_on(date_str):
