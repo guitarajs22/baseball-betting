@@ -3253,6 +3253,11 @@ def _apply_model_stats(rec: BetRecommendation) -> bool:
         SimulationResult.id.desc()
     ).first()
     if not sim:
+        app.logger.warning(
+            "_apply_model_stats: no SimulationResult for game_id=%s — bet %s "
+            "will keep placeholder model_probability/edge_pct of 0.0",
+            rec.game_id, rec.id,
+        )
         return False
 
     game_obj  = rec.game
@@ -3298,6 +3303,12 @@ def _apply_model_stats(rec: BetRecommendation) -> bool:
             model_prob = sim.f5_away_cover_pct
 
     if model_prob is None:
+        app.logger.warning(
+            "_apply_model_stats: SimulationResult %s for game_id=%s has no "
+            "probability populated for bet_type=%s side=%s — bet %s will keep "
+            "placeholder model_probability/edge_pct of 0.0",
+            sim.id, rec.game_id, rec.bet_type, rec.side, rec.id,
+        )
         return False
 
     analysis = analyze_bet(model_prob, rec.price, rec.bankroll_at_time or get_current_bankroll())
@@ -5555,6 +5566,16 @@ def _quick_entry_analyze_inner():
                 over_prob   = round(float(_np.sum(totals > total_line) / n), 4)
                 under_prob  = round(float(_np.sum(totals < total_line) / n), 4)
 
+                # Persist onto the SimulationResult row so a bet logged manually via
+                # /bet/manual can look these up afterward. Without this, _apply_model_stats()
+                # finds over_pct/under_pct = None and silently leaves model_probability/
+                # edge_pct at 0.0 forever (bug found 2026-09-07 — 11 real totals bets on
+                # 2026-04-17/18 saved with 0.0 edge this way).
+                sim.over_pct = over_prob
+                sim.under_pct = under_prob
+                sim.simulated_total_line = total_line
+                db.session.commit()
+
                 TOTALS_MIN_RAW = 0.58
                 for side, our_raw, ml in [
                     ("over",  over_prob,  over_odds),
@@ -5616,6 +5637,14 @@ def _quick_entry_analyze_inner():
             try:
                 f5_ou = calculate_f5_over_under(
                     {"score_distribution": sim.score_distribution}, f5_total)
+
+                # Same persistence fix as full-game totals above — otherwise F5 totals
+                # bets logged manually also silently save 0.0 model_probability/edge_pct.
+                sim.f5_over_pct = f5_ou["over"]
+                sim.f5_under_pct = f5_ou["under"]
+                sim.f5_simulated_total_line = f5_total
+                db.session.commit()
+
                 F5_TOTALS_MIN = 0.55
                 for side, our_raw, ml in [
                     ("over",  f5_ou["over"],  f5_over),
