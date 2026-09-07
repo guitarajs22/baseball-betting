@@ -143,6 +143,88 @@ class PlayerStats(db.Model):
     updated_at = db.Column(db.DateTime, default=datetime.utcnow)
 
 
+class PlayerStatsHistory(db.Model):
+    """Point-in-time snapshot of batting stats, for backtesting ONLY.
+
+    Same shape as PlayerStats plus as_of_date. Populated by
+    import_data.py's --snapshot-date mode, which never touches PlayerStats.
+    The live app / recommendation engine never reads this table — only
+    backtest/backtest.py does, via get_history_asof(). This is what fixes
+    the backtest's look-ahead bias: PlayerStats only ever held a single
+    row per (player, season, split) that got overwritten on every import,
+    so a backtest of a March game and a September game both saw the same
+    (whatever-is-current) numbers. This table lets us store (and later
+    look up) what the stats actually were as of a given date.
+    """
+    __tablename__ = "player_stats_history"
+    id = db.Column(db.Integer, primary_key=True)
+    player_id = db.Column(db.Integer, db.ForeignKey("players.id"), nullable=False)
+    season = db.Column(db.Integer, nullable=False)
+    split = db.Column(db.String(10), nullable=False)  # "vs_LHP", "vs_RHP", "overall"
+    as_of_date = db.Column(db.Date, nullable=False)    # date this snapshot reflects
+
+    pa = db.Column(db.Integer, default=0)
+    ab = db.Column(db.Integer, default=0)
+    single_rate = db.Column(db.Float, default=0.0)
+    double_rate = db.Column(db.Float, default=0.0)
+    triple_rate = db.Column(db.Float, default=0.0)
+    hr_rate = db.Column(db.Float, default=0.0)
+    walk_rate = db.Column(db.Float, default=0.0)
+    strikeout_rate = db.Column(db.Float, default=0.0)
+    out_rate = db.Column(db.Float, default=0.0)
+    woba = db.Column(db.Float)
+    wrc_plus = db.Column(db.Integer)
+    babip = db.Column(db.Float)
+    avg = db.Column(db.Float)
+    obp = db.Column(db.Float)
+    slg = db.Column(db.Float)
+
+    player = db.relationship("Player")
+    created_at = db.Column(db.DateTime, default=datetime.utcnow)
+
+    __table_args__ = (
+        db.UniqueConstraint("player_id", "season", "split", "as_of_date",
+                             name="uq_player_stats_history"),
+    )
+
+
+class PitchingStatsHistory(db.Model):
+    """Point-in-time snapshot of pitching stats — see PlayerStatsHistory."""
+    __tablename__ = "pitching_stats_history"
+    id = db.Column(db.Integer, primary_key=True)
+    player_id = db.Column(db.Integer, db.ForeignKey("players.id"), nullable=False)
+    season = db.Column(db.Integer, nullable=False)
+    role = db.Column(db.String(10), nullable=False)   # "SP" or "RP"
+    split = db.Column(db.String(10), nullable=False)  # "vs_LHB", "vs_RHB", "overall"
+    as_of_date = db.Column(db.Date, nullable=False)
+
+    ip = db.Column(db.Float, default=0.0)
+    games = db.Column(db.Integer, default=0)
+    games_started = db.Column(db.Integer, default=0)
+    single_rate_allowed = db.Column(db.Float, default=0.0)
+    double_rate_allowed = db.Column(db.Float, default=0.0)
+    triple_rate_allowed = db.Column(db.Float, default=0.0)
+    hr_rate_allowed = db.Column(db.Float, default=0.0)
+    walk_rate_allowed = db.Column(db.Float, default=0.0)
+    strikeout_rate = db.Column(db.Float, default=0.0)
+    out_rate = db.Column(db.Float, default=0.0)
+    era = db.Column(db.Float)
+    fip = db.Column(db.Float)
+    xfip = db.Column(db.Float)
+    k_per_9 = db.Column(db.Float)
+    bb_per_9 = db.Column(db.Float)
+    hr_per_9 = db.Column(db.Float)
+    gb_rate = db.Column(db.Float)
+
+    player = db.relationship("Player")
+    created_at = db.Column(db.DateTime, default=datetime.utcnow)
+
+    __table_args__ = (
+        db.UniqueConstraint("player_id", "season", "role", "split", "as_of_date",
+                             name="uq_pitching_stats_history"),
+    )
+
+
 class PitchingStats(db.Model):
     """Pitching stats including arsenal breakdown."""
     __tablename__ = "pitching_stats"

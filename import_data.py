@@ -17,6 +17,7 @@ logger = logging.getLogger(__name__)
 
 from app import app, db, init_db
 from database.schema import (Team, Player, PlayerStats, PitchingStats,
+                               PlayerStatsHistory, PitchingStatsHistory,
                                Ballpark, BankrollLog)
 from data.fangraphs import load_batting_csv, load_pitching_csv
 from data.mlb_api import get_all_teams, get_team_roster
@@ -241,6 +242,12 @@ def _find_csv(exports_dir: str, season: int, filename: str) -> str:
     return None
 
 
+def _find_snapshot_csv(snapshot_dir: str, filename: str) -> str:
+    """Look for a CSV directly inside a snapshot folder (exports/{season}/snapshots/{as_of_date}/)."""
+    path = os.path.join(snapshot_dir, filename)
+    return path if os.path.exists(path) else None
+
+
 def import_fangraphs_batting(season: int = None):
     """Import all FanGraphs batting CSVs from exports/{season}/ folder."""
     if season is None:
@@ -320,6 +327,94 @@ def import_fangraphs_batting(season: int = None):
 
         db.session.commit()
         logger.info(f"Imported {imported} batting records for split: {split}")
+
+
+def import_fangraphs_batting_snapshot(season: int, as_of_date, snapshot_dir: str):
+    """Import FanGraphs batting CSVs into PlayerStatsHistory for backtesting.
+
+    Same parsing logic as import_fangraphs_batting(), but:
+      - reads from an explicit snapshot_dir (not exports/{season}/)
+      - writes to PlayerStatsHistory (never touches live PlayerStats)
+      - is idempotent per (player, season, split, as_of_date) — safe to re-run
+        for the same as_of_date without duplicating rows.
+
+    Used for backtest.py's point-in-time lookups. Never called from any
+    live/admin route — this is a standalone maintenance operation run via
+    `python import_data.py --season 2026 --snapshot-date YYYY-MM-DD
+    --snapshot-dir exports/2026/snapshots/YYYY-MM-DD`.
+    """
+    files = {
+        "overall": f"batting_overall_{season}.csv",
+        "vs_LHP":  f"batting_vs_lhp_{season}.csv",
+        "vs_RHP":  f"batting_vs_rhp_{season}.csv",
+    }
+
+    for split, filename in files.items():
+        filepath = _find_snapshot_csv(snapshot_dir, filename)
+        if not filepath:
+            logger.warning(f"Not found: {snapshot_dir}/{filename} — skipping {split} split")
+            continue
+
+        df = pd.read_csv(filepath)
+        logger.info(f"[snapshot {as_of_date}] Loaded {len(df)} rows from {filename}")
+
+        is_dashboard = "BB%" in df.columns
+        has_raw_counts = "1B" in df.columns
+
+        imported = 0
+        for _, raw_row in df.iterrows():
+            row = raw_row.to_dict()
+            player = _find_player(row)
+            if not player:
+                continue
+
+            pa = int(float(row.get("PA", 0) or 0))
+            ab = int(float(row.get("AB", 0) or 0))
+
+            if is_dashboard:
+                rates = _rates_from_dashboard(row, pa)
+            elif has_raw_counts:
+                rates = _rates_from_standard(row, pa)
+            else:
+                rates = {}
+
+            if not rates:
+                continue
+
+            # Idempotent: only delete this exact snapshot's row, if re-running
+            PlayerStatsHistory.query.filter_by(
+                player_id=player.id, season=season, split=split, as_of_date=as_of_date
+            ).delete()
+
+            def _f(key, default=0.0):
+                v = row.get(key, default)
+                try:
+                    return float(v) if v not in (None, "", "nan") else default
+                except (ValueError, TypeError):
+                    return default
+
+            stats = PlayerStatsHistory(
+                player_id=player.id, season=season, split=split, as_of_date=as_of_date,
+                pa=pa, ab=ab,
+                single_rate=rates.get("single_rate", 0),
+                double_rate=rates.get("double_rate", 0),
+                triple_rate=rates.get("triple_rate", 0),
+                hr_rate=rates.get("hr_rate", 0),
+                walk_rate=rates.get("walk_rate", 0),
+                strikeout_rate=rates.get("strikeout_rate", 0),
+                out_rate=rates.get("out_rate", 0),
+                woba=_f("wOBA") or None,
+                wrc_plus=int(_f("wRC+")) or None,
+                babip=_f("BABIP") or None,
+                avg=_f("AVG") or None,
+                obp=_f("OBP") or None,
+                slg=_f("SLG") or None,
+            )
+            db.session.add(stats)
+            imported += 1
+
+        db.session.commit()
+        logger.info(f"[snapshot {as_of_date}] Imported {imported} batting history records for split: {split}")
 
 
 def _pitcher_rates_from_dashboard(row: dict, ip: float) -> dict:
@@ -492,6 +587,94 @@ def import_fangraphs_pitching(season: int = None):
         logger.info(f"Imported {imported} pitching records for {role} {split}")
 
 
+def import_fangraphs_pitching_snapshot(season: int, as_of_date, snapshot_dir: str):
+    """Import FanGraphs pitching CSVs into PitchingStatsHistory for backtesting.
+    See import_fangraphs_batting_snapshot() for the design rationale."""
+    files = {
+        ("SP", "overall"): f"pitching_sp_overall_{season}.csv",
+        ("RP", "overall"): f"pitching_rp_overall_{season}.csv",
+        ("SP", "vs_LHB"):  f"pitching_sp_vs_lhb_{season}.csv",
+        ("SP", "vs_RHB"):  f"pitching_sp_vs_rhb_{season}.csv",
+    }
+
+    for (role, split), filename in files.items():
+        filepath = _find_snapshot_csv(snapshot_dir, filename)
+        if not filepath:
+            logger.warning(f"Not found: {snapshot_dir}/{filename} — skipping")
+            continue
+
+        df = pd.read_csv(filepath)
+        logger.info(f"[snapshot {as_of_date}] Loaded {len(df)} rows from {filename}")
+
+        is_dashboard = "K/9" in df.columns
+        has_tbf      = "TBF" in df.columns
+
+        imported = 0
+        for _, raw_row in df.iterrows():
+            row = raw_row.to_dict()
+            player = _find_player(row)
+            if not player:
+                continue
+
+            def _f(key, default=0.0):
+                v = row.get(key, default)
+                try:
+                    return float(v) if v not in (None, "", "nan") else default
+                except (ValueError, TypeError):
+                    return default
+
+            ip = _f("IP")
+            if ip <= 0 and has_tbf:
+                tbf = float(row.get("TBF", 0) or 0)
+                ip = round(tbf / 4.3, 1)
+
+            if is_dashboard:
+                rates = _pitcher_rates_from_dashboard(row, ip)
+            elif has_tbf:
+                rates = _pitcher_rates_from_splits(row)
+            else:
+                rates = {}
+
+            if not rates:
+                continue
+
+            PitchingStatsHistory.query.filter_by(
+                player_id=player.id, season=season, role=role, split=split, as_of_date=as_of_date
+            ).delete()
+
+            gb_raw = row.get("GB%", 0)
+            try:
+                gb = _parse_pct(gb_raw) if gb_raw else None
+            except Exception:
+                gb = None
+
+            ps = PitchingStatsHistory(
+                player_id=player.id, season=season, role=role, split=split, as_of_date=as_of_date,
+                ip=ip,
+                games=int(_f("G")),
+                games_started=int(_f("GS")),
+                single_rate_allowed=rates.get("single_rate_allowed", 0),
+                double_rate_allowed=rates.get("double_rate_allowed", 0),
+                triple_rate_allowed=rates.get("triple_rate_allowed", 0),
+                hr_rate_allowed=rates.get("hr_rate_allowed", 0),
+                walk_rate_allowed=rates.get("walk_rate_allowed", 0),
+                strikeout_rate=rates.get("strikeout_rate", 0),
+                out_rate=rates.get("out_rate", 0),
+                era=_f("ERA") or None,
+                fip=_f("FIP") or None,
+                xfip=_f("xFIP") or None,
+                k_per_9=_f("K/9") or None,
+                bb_per_9=_f("BB/9") or None,
+                hr_per_9=_f("HR/9") or None,
+                gb_rate=gb,
+            )
+            db.session.add(ps)
+            imported += 1
+
+        db.session.commit()
+        logger.info(f"[snapshot {as_of_date}] Imported {imported} pitching history records for {role} {split}")
+
+
 def seed_roster_from_mlb_api():
     """Pull rosters from MLB Stats API and add unknown players to DB."""
     teams = Team.query.all()
@@ -542,23 +725,53 @@ if __name__ == "__main__":
         action="store_true",
         help="Skip roster sync — only import FanGraphs CSVs (faster for mid-season updates).",
     )
+    parser.add_argument(
+        "--snapshot-date",
+        type=str,
+        default=None,
+        help=("Point-in-time backtest mode: import into PlayerStatsHistory / "
+              "PitchingStatsHistory instead of the live tables, tagged with this "
+              "as-of date (YYYY-MM-DD). Never touches live stats. Requires "
+              "--snapshot-dir. Ignores --stats-only (snapshot mode never syncs rosters)."),
+    )
+    parser.add_argument(
+        "--snapshot-dir",
+        type=str,
+        default=None,
+        help=("Folder containing the 7 FanGraphs CSVs for --snapshot-date, e.g. "
+              "exports/2026/snapshots/2026-05-31/. Required with --snapshot-date."),
+    )
     args = parser.parse_args()
     season = args.season
 
-    logger.info(f"Starting data import for season {season}...")
-    logger.info(f"Looking for CSVs in: exports/{season}/")
+    if args.snapshot_date:
+        from datetime import datetime as _dt
+        if not args.snapshot_dir:
+            parser.error("--snapshot-date requires --snapshot-dir")
+        as_of = _dt.strptime(args.snapshot_date, "%Y-%m-%d").date()
+        logger.info(f"Snapshot import for season {season}, as-of {as_of}, "
+                    f"reading from {args.snapshot_dir}")
+        with app.app_context():
+            init_db()
+            import_fangraphs_batting_snapshot(season, as_of, args.snapshot_dir)
+            import_fangraphs_pitching_snapshot(season, as_of, args.snapshot_dir)
+            logger.info(f"Done! Snapshot as-of {as_of} imported into history tables "
+                        f"(live PlayerStats/PitchingStats untouched).")
+    else:
+        logger.info(f"Starting data import for season {season}...")
+        logger.info(f"Looking for CSVs in: exports/{season}/")
 
-    with app.app_context():
-        init_db()
-        if not args.stats_only:
-            logger.info("1/4 Seeding teams and ballparks...")
-            seed_teams_and_parks()
-            logger.info("2/4 Fetching rosters from MLB API...")
-            seed_roster_from_mlb_api()
-        else:
-            logger.info("(--stats-only: skipping roster sync)")
-        logger.info("3/4 Importing FanGraphs batting data...")
-        import_fangraphs_batting(season)
-        logger.info("4/4 Importing FanGraphs pitching data...")
-        import_fangraphs_pitching(season)
-        logger.info(f"Done! Season {season} stats imported.")
+        with app.app_context():
+            init_db()
+            if not args.stats_only:
+                logger.info("1/4 Seeding teams and ballparks...")
+                seed_teams_and_parks()
+                logger.info("2/4 Fetching rosters from MLB API...")
+                seed_roster_from_mlb_api()
+            else:
+                logger.info("(--stats-only: skipping roster sync)")
+            logger.info("3/4 Importing FanGraphs batting data...")
+            import_fangraphs_batting(season)
+            logger.info("4/4 Importing FanGraphs pitching data...")
+            import_fangraphs_pitching(season)
+            logger.info(f"Done! Season {season} stats imported.")

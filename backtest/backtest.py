@@ -39,6 +39,39 @@ def american_to_implied(american_odds: int) -> float:
     return abs(american_odds) / (abs(american_odds) + 100)
 
 
+def get_history_asof(history_model, as_of_date, **filters):
+    """Return {player_id: row} — the most recent point-in-time snapshot row
+    per player from a *History table (PlayerStatsHistory / PitchingStatsHistory)
+    at or before as_of_date, matching the given equality filters (season,
+    split, role, etc.).
+
+    This is the fix for the backtest's look-ahead bias: PlayerStats/PitchingStats
+    only ever hold the CURRENT stat snapshot (overwritten on every import), so a
+    backtest of a March game and a September game both saw whatever the latest
+    import happened to be. The History tables accumulate one row per snapshot
+    date instead, and this picks the snapshot that would actually have been
+    available on the date being simulated.
+
+    Returns an empty dict if no history rows exist at or before as_of_date for
+    these filters — callers should fall back to the live table in that case
+    (this happens for games before the first snapshot was ever taken).
+    """
+    # Normalize datetime -> date so comparisons against the DB's Date column work.
+    if hasattr(as_of_date, "hour"):
+        as_of_date = as_of_date.date()
+
+    rows = history_model.query.filter_by(**filters).filter(
+        history_model.as_of_date <= as_of_date
+    ).all()
+
+    best = {}
+    for r in rows:
+        prev = best.get(r.player_id)
+        if prev is None or r.as_of_date > prev.as_of_date:
+            best[r.player_id] = r
+    return best
+
+
 def woo_rifi_prob(total: float) -> float:
     """Wizard of Odds regression: baseline P(run in first inning) from game total."""
     return min(0.99, max(0.01, 0.2554 + 0.0304 * total))
@@ -114,6 +147,7 @@ def simulate_season_backtest(app_context, start_date: str, end_date: str,
     """
     from data.mlb_api import get_historical_schedule, get_game_result, get_first_inning_result
     from database.schema import (Team, Player, PlayerStats, PitchingStats,
+                                  PlayerStatsHistory, PitchingStatsHistory,
                                   Game, Lineup, Odds, BankrollLog, HistoricalOdds)
     from models.simulation import (run_simulations, GameInputs, BatterProfile,
                                     PitcherProfile, BullpenProfile, ParkFactors,
@@ -338,30 +372,38 @@ def simulate_season_backtest(app_context, start_date: str, end_date: str,
                 Get n best batters by wOBA for a team, using the correct
                 handedness split based on the opposing starter's throwing hand.
                 Falls back to overall stats if the split has fewer than 5 players.
+
+                Uses point-in-time stats (PlayerStatsHistory) as of `current`,
+                the date being simulated, so a March game and a September game
+                see the stats that actually existed on those dates. Falls back
+                to the live PlayerStats table for dates before the first
+                snapshot was ever taken (early-season gap in history coverage).
                 """
                 split = "vs_LHP" if opponent_throws == "L" else "vs_RHP"
+                team_player_ids = {p.id for p in Player.query.filter_by(team_id=team_id).all()}
 
-                stats = (
-                    PlayerStats.query
-                    .join(Player)
-                    .filter(Player.team_id == team_id,
-                            PlayerStats.season == season,
-                            PlayerStats.split == split)
-                    .order_by(PlayerStats.woba.desc())
-                    .limit(n).all()
-                )
-
-                # Fall back to overall if split doesn't have enough players
-                if len(stats) < 5:
-                    stats = (
+                def _ranked_asof(split_name):
+                    hist = get_history_asof(PlayerStatsHistory, current,
+                                             season=season, split=split_name)
+                    rows = [r for pid, r in hist.items() if pid in team_player_ids]
+                    if rows:
+                        rows.sort(key=lambda r: r.woba or 0, reverse=True)
+                        return rows[:n]
+                    return (
                         PlayerStats.query
                         .join(Player)
                         .filter(Player.team_id == team_id,
                                 PlayerStats.season == season,
-                                PlayerStats.split == "overall")
+                                PlayerStats.split == split_name)
                         .order_by(PlayerStats.woba.desc())
                         .limit(n).all()
                     )
+
+                stats = _ranked_asof(split)
+
+                # Fall back to overall if split doesn't have enough players
+                if len(stats) < 5:
+                    stats = _ranked_asof("overall")
 
                 batters = []
                 for s in stats:
@@ -399,18 +441,27 @@ def simulate_season_backtest(app_context, start_date: str, end_date: str,
                 The same team always gets the same profile, no phantom edge from
                 random draws.
                 """
-                rotation = (
-                    PitchingStats.query
-                    .join(Player)
-                    .filter(Player.team_id == team_id,
-                            PitchingStats.season == season,
-                            PitchingStats.role == "SP",
-                            PitchingStats.split == "overall",
-                            PitchingStats.games_started > 0)
-                    .order_by(PitchingStats.games_started.desc())
-                    .limit(6)  # top 6 by starts covers the realistic rotation depth
-                    .all()
-                )
+                team_player_ids_rot = {p.id for p in Player.query.filter_by(team_id=team_id).all()}
+                hist_rot = get_history_asof(PitchingStatsHistory, current,
+                                             season=season, role="SP", split="overall")
+                rotation = [r for pid, r in hist_rot.items()
+                            if pid in team_player_ids_rot and (r.games_started or 0) > 0]
+                if rotation:
+                    rotation.sort(key=lambda r: r.games_started or 0, reverse=True)
+                    rotation = rotation[:6]
+                else:
+                    rotation = (
+                        PitchingStats.query
+                        .join(Player)
+                        .filter(Player.team_id == team_id,
+                                PitchingStats.season == season,
+                                PitchingStats.role == "SP",
+                                PitchingStats.split == "overall",
+                                PitchingStats.games_started > 0)
+                        .order_by(PitchingStats.games_started.desc())
+                        .limit(6)  # top 6 by starts covers the realistic rotation depth
+                        .all()
+                    )
                 if not rotation:
                     return PitcherProfile(
                         name="TBD", throws="R",
@@ -454,12 +505,16 @@ def simulate_season_backtest(app_context, start_date: str, end_date: str,
                     rotation_player_ids = [s.player_id for s in rotation]
                     rotation_splits = {}
                     for bat_hand, db_split in [("L", "vs_LHB"), ("R", "vs_RHB")]:
-                        split_rows = (PitchingStats.query
-                                      .filter(PitchingStats.player_id.in_(rotation_player_ids),
-                                              PitchingStats.season == season,
-                                              PitchingStats.role == "SP",
-                                              PitchingStats.split == db_split)
-                                      .all())
+                        hist_split = get_history_asof(PitchingStatsHistory, current,
+                                                      season=season, role="SP", split=db_split)
+                        split_rows = [r for pid, r in hist_split.items() if pid in rotation_player_ids]
+                        if not split_rows:
+                            split_rows = (PitchingStats.query
+                                          .filter(PitchingStats.player_id.in_(rotation_player_ids),
+                                                  PitchingStats.season == season,
+                                                  PitchingStats.role == "SP",
+                                                  PitchingStats.split == db_split)
+                                          .all())
                         if not split_rows:
                             continue
                         split_tip = sum(r.ip or 0 for r in split_rows)
@@ -481,14 +536,19 @@ def simulate_season_backtest(app_context, start_date: str, end_date: str,
                 return profile
 
             def get_team_bullpen(team_id):
-                relievers = (
-                    PitchingStats.query.join(Player)
-                    .filter(Player.team_id == team_id,
-                            PitchingStats.season == season,
-                            PitchingStats.role == "RP",
-                            PitchingStats.split == "overall")
-                    .all()
-                )
+                team_player_ids_rp = {p.id for p in Player.query.filter_by(team_id=team_id).all()}
+                hist_rp = get_history_asof(PitchingStatsHistory, current,
+                                            season=season, role="RP", split="overall")
+                relievers = [r for pid, r in hist_rp.items() if pid in team_player_ids_rp]
+                if not relievers:
+                    relievers = (
+                        PitchingStats.query.join(Player)
+                        .filter(Player.team_id == team_id,
+                                PitchingStats.season == season,
+                                PitchingStats.role == "RP",
+                                PitchingStats.split == "overall")
+                        .all()
+                    )
                 if not relievers:
                     return BullpenProfile(
                         single_rate_allowed=0.155, double_rate_allowed=0.048,
@@ -553,11 +613,16 @@ def simulate_season_backtest(app_context, start_date: str, end_date: str,
                 player = Player.query.filter_by(mlb_id=mlb_id).first()
                 if not player:
                     return get_team_starter(fallback_team_id)
-                stats = (
-                    PitchingStats.query
-                    .filter_by(player_id=player.id, season=season, role="SP", split="overall")
-                    .first()
-                )
+                hist_starter = get_history_asof(PitchingStatsHistory, current,
+                                                 player_id=player.id, season=season,
+                                                 role="SP", split="overall")
+                stats = hist_starter.get(player.id)
+                if not stats:
+                    stats = (
+                        PitchingStats.query
+                        .filter_by(player_id=player.id, season=season, role="SP", split="overall")
+                        .first()
+                    )
                 if not stats:
                     # Try prior season
                     stats = (
@@ -585,12 +650,17 @@ def simulate_season_backtest(app_context, start_date: str, end_date: str,
                 if not no_pitcher_splits:
                     splits = {}
                     for bat_hand, db_split in [("L", "vs_LHB"), ("R", "vs_RHB")]:
-                        split_row = (PitchingStats.query
-                                     .filter_by(player_id=player.id,
-                                                season=stats.season,
-                                                role="SP",
-                                                split=db_split)
-                                     .first())
+                        hist_sp_split = get_history_asof(PitchingStatsHistory, current,
+                                                          player_id=player.id, season=stats.season,
+                                                          role="SP", split=db_split)
+                        split_row = hist_sp_split.get(player.id)
+                        if not split_row:
+                            split_row = (PitchingStats.query
+                                         .filter_by(player_id=player.id,
+                                                    season=stats.season,
+                                                    role="SP",
+                                                    split=db_split)
+                                         .first())
                         if not split_row or (split_row.ip or 0) < 50.0:
                             continue
                         splits[bat_hand] = build_pitcher_split_rates({
@@ -623,9 +693,18 @@ def simulate_season_backtest(app_context, start_date: str, end_date: str,
                     player = Player.query.filter_by(mlb_id=entry["mlb_id"]).first()
                     stats = None
                     if player:
-                        stats = (PlayerStats.query
-                                 .filter_by(player_id=player.id, season=season, split=split)
-                                 .first())
+                        hist_lineup = get_history_asof(PlayerStatsHistory, current,
+                                                        player_id=player.id, season=season, split=split)
+                        stats = hist_lineup.get(player.id)
+                        if not stats:
+                            stats = (PlayerStats.query
+                                     .filter_by(player_id=player.id, season=season, split=split)
+                                     .first())
+                        if not stats:
+                            hist_lineup_overall = get_history_asof(PlayerStatsHistory, current,
+                                                                    player_id=player.id, season=season,
+                                                                    split="overall")
+                            stats = hist_lineup_overall.get(player.id)
                         if not stats:
                             stats = (PlayerStats.query
                                      .filter_by(player_id=player.id, season=season, split="overall")
