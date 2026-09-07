@@ -1,4 +1,4 @@
-pit# 2026 FanGraphs Stats Import Guide
+# 2026 FanGraphs Stats Import Guide
 
 This folder holds your 2026 season CSV exports from FanGraphs.
 Once you've downloaded all the files and placed them here, run:
