@@ -893,6 +893,24 @@ def simulate_season_backtest(app_context, start_date: str, end_date: str,
             OVER_MIN_EDGE  = max(min_edge, 9.0)
             UNDER_MIN_EDGE = max(min_edge, 9.0)
             # permissive modes focus on moneyline only — skip totals
+            #
+            # Total-line floor (added 2026-09-13, from Run 3 point-in-time
+            # backtest with real lineups): totals bets on a market total of
+            # 7.5 or below lose money regardless of side or model confidence
+            # (289 real bets checked against actual FanGraphs/MLB-API market
+            # lines: total_line <= 7.5 -> 71 bets, -24.65% ROI, bad on BOTH
+            # over (-25.17%) and under (-23.37%); total_line > 7.5 -> 218
+            # bets, +15.99% ROI). This isn't a probability-calibration
+            # problem -- the sim's run-scoring distribution appears to be
+            # systematically unreliable in low-scoring environments (likely
+            # ace-vs-ace matchups / extreme pitcher's parks / cold-weather
+            # games not fully captured by the model), so no amount of
+            # reshaping the probability curve fixes it. Skip these bets
+            # entirely instead of trying to calibrate around them.
+            TOTALS_MIN_LINE = 7.5
+            if real_total is not None and real_total <= TOTALS_MIN_LINE:
+                real_total = None
+
             if real_total is not None and not permissive_mode:
                 ou = calculate_over_under(sim, real_total)
                 over_prob  = ou["over"]
@@ -968,6 +986,7 @@ def simulate_season_backtest(app_context, start_date: str, end_date: str,
                             "is_underdog":  False,
                             "is_favorite":  False,
                             "odds_source":  odds_src,
+                            "total_line":   real_total,
                             "won":          won if not is_push else None,  # None = push
                             "profit":       round(profit, 2),
                             "bankroll":     round(bankroll, 2),
