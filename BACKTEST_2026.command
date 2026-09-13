@@ -23,6 +23,12 @@ MAX_BET_DOLLARS=2000  # Hard ceiling per bet in dollars (mirrors BetMGM/Caesars 
 BANKROLL=1000         # Starting bankroll in dollars
 CACHE="backtest/lineup_cache_2026.json"
 OUTPUT="backtest/results_2026_full.csv"
+SEED=20260913          # Fixed seed -- keeps Monte Carlo draws identical between
+                        # runs so you can isolate the effect of a real code/data
+                        # change (like a filter or calibration tweak) instead of
+                        # comparing against fresh random noise each time. Change
+                        # this to a new number only if you deliberately want a
+                        # different random draw to sanity-check for overfitting.
 # Uncomment ONE of the two lines below:
 # BET_MODE="--flat-bet 100"         # Flat $100/bet — best for seeing true model accuracy
 BET_MODE="--kelly 0.25"             # Kelly sizing — realistic growth simulation
@@ -39,6 +45,7 @@ echo "  Bankroll:     \$$BANKROLL"
 echo "  Bet mode:     $BET_MODE"
 echo "  Cache:        $CACHE"
 echo "  Output:       $OUTPUT"
+echo "  Seed:         $SEED (fixed -- reruns are reproducible)"
 echo "  caffeinate:   ON (lid-close safe)"
 echo "=============================================="
 echo ""
@@ -55,6 +62,7 @@ caffeinate -s python -m backtest.backtest \
   --bankroll "$BANKROLL" \
   --cache "$CACHE" \
   --output "$OUTPUT" \
+  --seed "$SEED" \
   $BET_MODE
 
 echo ""
