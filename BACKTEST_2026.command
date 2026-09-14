@@ -23,7 +23,7 @@ MAX_BET_DOLLARS=2000  # Hard ceiling per bet in dollars (mirrors BetMGM/Caesars 
 BANKROLL=1000         # Starting bankroll in dollars
 CACHE="backtest/lineup_cache_2026.json"
 OUTPUT="backtest/results_2026_full.csv"
-SEED=20260913          # Fixed seed -- keeps Monte Carlo draws identical between
+SEED=71828182          # Fixed seed -- keeps Monte Carlo draws identical between
                         # runs so you can isolate the effect of a real code/data
                         # change (like a filter or calibration tweak) instead of
                         # comparing against fresh random noise each time. Change
