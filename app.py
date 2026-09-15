@@ -2409,6 +2409,17 @@ def _generate_recommendations(game: Game, sim: SimulationResult):
     OVER_MIN_EDGE  = max(MIN_EDGE_PCT, 9.0)
     UNDER_MIN_EDGE = max(MIN_EDGE_PCT, 9.0)
 
+    # Total-line floor (added 2026-09-15, backported from backtest.py):
+    # point-in-time backtest with real lineups showed totals bets on a
+    # market total of 7.5 or below lose money regardless of side or model
+    # confidence (289 real bets: total_line <= 7.5 -> -24.65% ROI on both
+    # over and under; total_line > 7.5 -> +15.99% ROI). Not a probability-
+    # calibration issue -- the sim's run-scoring distribution appears
+    # genuinely less reliable in low-scoring environments (ace-vs-ace
+    # matchups, extreme pitcher's parks, cold weather), so skip these
+    # outright rather than try to calibrate around them.
+    TOTALS_MIN_LINE = 7.5
+
     # NOTE: OVER suppression was tried briefly (May 2026) when splits-on
     # totals showed overs at -39.81% ROI / unders at +17.59%. Subsequent
     # splits-OFF A/B (2025 main, real lineups, same seed) flipped the
@@ -2433,6 +2444,8 @@ def _generate_recommendations(game: Game, sim: SimulationResult):
                 continue  # below validated probability range — no data to support recommendation
             row, price = best_row_for(by_market.get("totals", []), field)
             if row and price:
+                if row.total_line is not None and row.total_line <= TOTALS_MIN_LINE:
+                    continue  # low-total games -- validated loser, see note above
                 if price > MAX_UNDERDOG_ODDS:
                     continue  # skip extreme-priced totals lines
                 our_prob = calibrate_prob(raw_prob, "totals", side)
@@ -5577,10 +5590,19 @@ def _quick_entry_analyze_inner():
                 db.session.commit()
 
                 TOTALS_MIN_RAW = 0.58
+                # Total-line floor -- see _generate_recommendations() for the
+                # full backtest note. Same 7.5 cutoff, backported 2026-09-15.
+                TOTALS_MIN_LINE = 7.5
+                if total_line is not None and total_line <= TOTALS_MIN_LINE:
+                    _skip_totals_low_line = True
+                else:
+                    _skip_totals_low_line = False
                 for side, our_raw, ml in [
                     ("over",  over_prob,  over_odds),
                     ("under", under_prob, under_odds),
                 ]:
+                    if _skip_totals_low_line:
+                        continue
                     if our_raw < TOTALS_MIN_RAW:
                         continue
                     our_p = calibrate_prob(our_raw, "totals", side)
