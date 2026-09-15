@@ -29,6 +29,12 @@ SEED=71828182          # Fixed seed -- keeps Monte Carlo draws identical between
                         # comparing against fresh random noise each time. Change
                         # this to a new number only if you deliberately want a
                         # different random draw to sanity-check for overfitting.
+MC_DRAWS=50000          # Monte Carlo simulations per game (default in the live
+                        # app is 10000). 5x more draws shrinks per-game
+                        # probability noise, so fewer borderline bets flip in
+                        # or out of the edge threshold between runs. Takes
+                        # roughly 5x longer to run -- lower this back toward
+                        # 10000-20000 if a full-season run gets too slow.
 # Uncomment ONE of the two lines below:
 # BET_MODE="--flat-bet 100"         # Flat $100/bet — best for seeing true model accuracy
 BET_MODE="--kelly 0.25"             # Kelly sizing — realistic growth simulation
@@ -46,6 +52,7 @@ echo "  Bet mode:     $BET_MODE"
 echo "  Cache:        $CACHE"
 echo "  Output:       $OUTPUT"
 echo "  Seed:         $SEED (fixed -- reruns are reproducible)"
+echo "  MC draws:     $MC_DRAWS per game"
 echo "  caffeinate:   ON (lid-close safe)"
 echo "=============================================="
 echo ""
@@ -63,6 +70,7 @@ caffeinate -s python -m backtest.backtest \
   --cache "$CACHE" \
   --output "$OUTPUT" \
   --seed "$SEED" \
+  --mc-draws "$MC_DRAWS" \
   $BET_MODE
 
 echo ""

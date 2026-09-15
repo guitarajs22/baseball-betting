@@ -117,7 +117,8 @@ def simulate_season_backtest(app_context, start_date: str, end_date: str,
                               ml_permissive_calibrated: bool = False,
                               seed: Optional[int] = None,
                               calibration_variant: str = "standard",
-                              no_pitcher_splits: bool = False):
+                              no_pitcher_splits: bool = False,
+                              mc_draws: int = 10000):
     """
     Run a full backtest over a date range.
 
@@ -760,7 +761,7 @@ def simulate_season_backtest(app_context, start_date: str, end_date: str,
 
             gseed = _game_seed(seed, current.date(),
                                away_team.abbreviation, home_team.abbreviation)
-            sim = run_simulations(inputs, n=10000, seed=gseed)
+            sim = run_simulations(inputs, n=mc_draws, seed=gseed)
             home_win_prob = sim["home_win_pct"]
             away_win_prob = sim["away_win_pct"]
             total_avg_runs = sim.get("total_avg_runs", 9.0)
@@ -1114,7 +1115,7 @@ def simulate_season_backtest(app_context, start_date: str, end_date: str,
                 # Use a distinct seed for the first-inning sim so it doesn't
                 # produce the same output as the full-game sim on the same game.
                 fi_seed = None if gseed is None else (gseed ^ 0x5A5A5A5A) % (2**31 - 1)
-                fi_sim = run_simulations(fi_inputs, n=10000, seed=fi_seed)
+                fi_sim = run_simulations(fi_inputs, n=mc_draws, seed=fi_seed)
                 model_rifi_pct = fi_sim.get("rifi_pct", 0.5)
                 model_nrfi_pct = round(1.0 - model_rifi_pct, 4)
 
@@ -1293,6 +1294,7 @@ Examples:
     parser.add_argument("--ml-permissive",    action="store_true",        help="Research mode: moneyline only, strip ALL ML filter gates (odds range, raw prob floors, max edge cap). Takes every ML bet where raw edge >= --min-edge. Use to see what pure edge-based betting looks like.")
     parser.add_argument("--ml-permissive-calibrated", action="store_true", help="Like --ml-permissive, but KEEPS the calibration layer active. Apples-to-apples comparison to the live app's calibrated probabilities.")
     parser.add_argument("--seed",             type=int,   default=None,   help="Base seed for the Monte Carlo sim. Per-game seeds are derived from (seed, date, teams), so two runs with the same seed see identical sim outputs. Use to isolate calibration/filter changes from MC noise.")
+    parser.add_argument("--mc-draws",         type=int,   default=10000,  help="Monte Carlo draws per game (default: 10000, matches the live app). Raising this (e.g. 50000) shrinks per-game probability noise, which reduces how many borderline bets flip in/out of the edge threshold between runs -- useful when isolating a real code/data change from simulation noise. Costs runtime roughly linearly.")
     parser.add_argument("--calibration-variant", default="standard", choices=["standard", "scoped-bypass"], help="Which calibration path to use. 'standard' is production. 'scoped-bypass' applies the away-favorite bypass only when the away side is a favorite (odds < 0). Research mode.")
     parser.add_argument("--no-pitcher-splits", action="store_true", help="Disable pitcher vs_LHB / vs_RHB splits in the simulation (use overall rates only). Default: splits are ON.  Use to A/B test the impact of splits via two seeded runs.")
     args = parser.parse_args()
@@ -1320,6 +1322,7 @@ Examples:
             ml_permissive=args.ml_permissive,
             ml_permissive_calibrated=args.ml_permissive_calibrated,
             seed=args.seed,
+            mc_draws=args.mc_draws,
             calibration_variant=args.calibration_variant,
             no_pitcher_splits=args.no_pitcher_splits,
         )
